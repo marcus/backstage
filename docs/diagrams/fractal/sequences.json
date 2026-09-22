@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "journeys": [
+    {
+      "id": "draft-review",
+      "title": "From intent to reviewed draft",
+      "description": "Follow one authorized request through isolated implementation, scoped draft publication and independent review.",
+      "status": "current",
+      "provenance": "Authored successful-path scenario, 2026-09-10. Checked against lib/backstage/application/runners/container_phase_runner.rb (publication before submit_for_review), test/journey_test.rb (review of an existing draft), and docs/guides/active/operator-guide.md (explicit draft authority). Logical handoffs, not a runtime trace; admission, retries, durable store details and revision cycles are omitted.",
+      "participants": [
+        {
+          "id": "operator",
+          "title": "Operator",
+          "description": "An authorized caller using the CLI.",
+          "color": "#759EB5"
+        },
+        {
+          "id": "engine",
+          "element": "core.lifecycle",
+          "title": "Lifecycle"
+        },
+        {
+          "id": "implement",
+          "element": "core.agents.implement",
+          "title": "Implementation"
+        },
+        {
+          "id": "review",
+          "element": "core.agents.review",
+          "title": "Independent review"
+        },
+        {
+          "id": "publisher",
+          "element": "core.publisher",
+          "title": "Scoped publisher"
+        },
+        {
+          "id": "github",
+          "element": "outputs.drafts",
+          "title": "GitHub draft"
+        }
+      ],
+      "groups": [
+        {
+          "id": "execution",
+          "title": "Execution & review",
+          "participants": [
+            "engine",
+            "implement",
+            "review"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "type": "phase",
+          "id": "accept",
+          "title": "Accept authorized work",
+          "description": "",
+          "steps": [
+            {
+              "type": "message",
+              "id": "submit",
+              "from": "operator",
+              "to": "engine",
+              "title": "Accept bound work for draft publication",
+              "kind": "call",
+              "description": "Admission is a precondition. Both dispatch accept and the consuming dispatcher require explicit --publish-draft authority."
+            },
+            {
+              "type": "message",
+              "id": "record-acceptance",
+              "from": "engine",
+              "to": "engine",
+              "title": "Record acceptance and lifecycle state",
+              "kind": "call",
+              "description": ""
+            }
+          ]
+        },
+        {
+          "type": "phase",
+          "id": "produce",
+          "title": "Produce a candidate",
+          "description": "",
+          "steps": [
+            {
+              "type": "phase",
+              "id": "prepare",
+              "title": "Prepare an isolated run",
+              "description": "The implementation container gets bounded context and no publishing credentials.",
+              "steps": [
+                {
+                  "type": "message",
+                  "id": "bind-context",
+                  "from": "engine",
+                  "to": "engine",
+                  "title": "Bind repository, execution profile and authority",
+                  "kind": "call",
+                  "description": ""
+                },
+                {
+                  "type": "message",
+                  "id": "dispatch-implementation",
+                  "from": "engine",
+                  "to": "implement",
+                  "title": "Start uncredentialed implementation",
+                  "kind": "call",
+                  "description": ""
+                }
+              ]
+            },
+            {
+              "type": "message",
+              "id": "candidate",
+              "from": "implement",
+              "to": "engine",
+              "title": "Return bounded patch and candidate digest",
+              "kind": "return",
+              "description": "The candidate artifact binds the patch to its base and authorized repository context."
+            }
+          ]
+        },
+        {
+          "type": "phase",
+          "id": "publish",
+          "title": "Publish through scoped authority",
+          "description": "The scoped credentialed executor publishes the finalized draft before independent review. This is not deployment or merge authority.",
+          "steps": [
+            {
+              "type": "message",
+              "id": "request-publication",
+              "from": "engine",
+              "to": "publisher",
+              "title": "Request publication of the finalized candidate",
+              "kind": "call",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "revalidate",
+              "from": "publisher",
+              "to": "publisher",
+              "title": "Revalidate origin, branch, base and draft-only authority",
+              "kind": "call",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "create-draft",
+              "from": "publisher",
+              "to": "github",
+              "title": "Publish authorized branch and create draft PR",
+              "kind": "call",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "draft-receipt",
+              "from": "github",
+              "to": "publisher",
+              "title": "Return draft URL",
+              "kind": "return",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "persist-receipt",
+              "from": "publisher",
+              "to": "engine",
+              "title": "Record reconciled publication result",
+              "kind": "return",
+              "description": ""
+            }
+          ]
+        },
+        {
+          "type": "phase",
+          "id": "verify",
+          "title": "Review independently",
+          "description": "Review runs after draft publication. This path assumes an approved verdict; findings instead trigger revision of the same existing draft.",
+          "steps": [
+            {
+              "type": "message",
+              "id": "dispatch-review",
+              "from": "engine",
+              "to": "review",
+              "title": "Review the exact candidate in a fresh container",
+              "kind": "call",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "verdict",
+              "from": "review",
+              "to": "engine",
+              "title": "Return approved verdict bound to the digest",
+              "kind": "return",
+              "description": ""
+            },
+            {
+              "type": "message",
+              "id": "complete",
+              "from": "engine",
+              "to": "operator",
+              "title": "Return draft and review evidence",
+              "kind": "return",
+              "description": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

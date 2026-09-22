@@ -1,0 +1,18 @@
+repo:
+  origin: https://github.com/example/widgets.git
+  default_revision: main
+  default_branch: main
+  credentials: github
+trigger:
+  td_workspace: /projects/widgets
+  source_instance: widgets-example
+authority:
+  review_change: draft_pr
+instructions: instructions/widgets.md
+context:
+  repos:
+    - name: tracker
+      origin: https://github.com/example/tracker.git
+      revision: main
+      mount: refs/tracker
+      credentials: github

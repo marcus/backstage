@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "/opt/backstage/lib/backstage/errors"
+require "/opt/backstage/lib/backstage/domain/repository_authority"
+
+begin
+  command = ARGV.shift
+  designated_repository = ARGV.shift
+  default_branch = ARGV.shift
+  abort "usage: backstage-repository-authority origin|checkout|review ..." unless command && designated_repository && default_branch
+
+  authority = Backstage::RepositoryAuthority.new(designated_repository: designated_repository, default_branch: default_branch)
+
+  case command
+  when "origin"
+    authority.check_origin!(ARGV.fetch(0))
+    authority.check_branch!(ARGV.fetch(1))
+  when "checkout"
+    origin, actual_branch, expected_branch = ARGV
+    authority.check_checkout!(origin: origin, actual_branch: actual_branch, expected_branch: expected_branch)
+  when "review"
+    repository, branch, expected_branch, base, draft = ARGV
+    authority.check_review_response!(
+      repository: repository,
+      branch: branch,
+      expected_branch: expected_branch,
+      base: base,
+      draft: draft == "true"
+    )
+  else
+    abort "usage: backstage-repository-authority origin|checkout|review ..."
+  end
+rescue Backstage::Error, IndexError => error
+  warn error.message
+  exit 64
+end

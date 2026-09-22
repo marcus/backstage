@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/job-bundle-v1.json",
+  "title": "Backstage sealed job bundle v1",
+  "type": "object",
+  "required": ["schema_version", "id", "work_item", "repository", "harness", "execution", "policy", "context_grants"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "work_item": {
+      "type": "object",
+      "required": ["id", "title", "description", "source"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "source": { "type": "string" },
+        "source_ref": { "type": ["string", "object", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "repository": {
+      "type": "object",
+      "required": ["url", "revision", "default_branch", "branch", "designated_repository"],
+      "properties": {
+        "url": { "type": "string" },
+        "revision": { "type": "string" },
+        "default_branch": { "type": "string" },
+        "branch": { "type": "string" },
+        "designated_repository": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "harness": {
+      "type": "object",
+      "required": ["adapter", "provider", "model", "prompt"],
+      "properties": {
+        "adapter": { "type": "string" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "prompt": { "type": "string" },
+        "options": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "execution": {
+      "type": "object",
+      "required": ["image", "command", "timeout_seconds", "credential_refs", "mounts"],
+      "properties": {
+        "image": { "type": "string" },
+        "command": { "type": "array", "items": { "type": "string" } },
+        "timeout_seconds": { "type": "integer" },
+        "credential_refs": { "type": "array", "items": { "type": "string" } },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "target"],
+            "properties": {
+              "source": { "type": "string" },
+              "target": { "type": "string" },
+              "read_only": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "policy": {
+      "type": "object",
+      "required": ["name", "allowed_actions"],
+      "properties": {
+        "name": { "type": "string" },
+        "allowed_actions": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "context_grants": {
+      "type": "array",
+      "description": "Live agent-side context grants. V1 implements repository grants only.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "origin", "revision", "mount", "read_only"],
+        "properties": {
+          "kind": { "const": "repo" },
+          "name": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "origin": { "type": "string", "minLength": 1 },
+          "revision": { "type": "string", "minLength": 1 },
+          "mount": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$" },
+          "read_only": { "const": true },
+          "credential_ref": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

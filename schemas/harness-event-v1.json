@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/harness-event-v1.json",
+  "title": "Backstage normalized harness event v1",
+  "type": "object",
+  "required": ["schema_version", "type", "timestamp", "harness", "raw"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "type": { "enum": ["session", "agent_started", "message", "tool_started", "tool_updated", "tool_finished", "agent_finished", "settled"] },
+    "timestamp": { "type": "string" },
+    "harness": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "message": { "type": ["object", "null"] },
+    "tool": { "type": ["object", "null"] },
+    "usage": { "type": ["object", "null"] },
+    "raw": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Files one workflow transition request from inside a sealed worker.
+#
+# The worker holds no store, no host credentials, and no operator authority. It appends a request
+# to the bounded channel its run owns; the controller decides whether the request is permitted.
+set -euo pipefail
+
+bundle_path=${BACKSTAGE_JOB_BUNDLE:-/backstage/job-bundle.json}
+channel=$(jq -r '.agent_request_channel.path // empty' "$bundle_path")
+if [[ -z "$channel" ]]; then
+  printf 'this run has no agent request channel\n' >&2
+  exit 64
+fi
+
+if [[ "${1:-}" == "--json" ]]; then
+  if [[ -z "${2:-}" ]]; then
+    printf 'usage: backstage-agent-request --json JSON_OBJECT\n' >&2
+    exit 64
+  fi
+  jq -ce 'if type == "object" then . else error("request must be an object") end' <<< "$2" >> "$channel"
+  exit 0
+fi
+
+transition=${1:-}
+if [[ -z "$transition" ]]; then
+  printf 'usage: backstage-agent-request TRANSITION [REASON] [EVIDENCE_ARTIFACT_ID...]\n' >&2
+  exit 64
+fi
+reason=${2:-}
+shift 2 2>/dev/null || shift 1
+evidence=$(printf '%s\n' "$@" | jq -R . | jq -sc 'map(select(length > 0))')
+
+jq -cn --arg transition "$transition" --arg reason "$reason" --argjson evidence "$evidence" \
+  '{transition: $transition, evidence: $evidence} + (if $reason == "" then {} else {reason: $reason} end)' >> "$channel"

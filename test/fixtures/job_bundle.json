@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "id": "job-fixture-1",
+  "work_item": { "id": "work-fixture-1", "title": "Prove a container", "description": "Print a line", "source": "manual" },
+  "repository": { "url": "https://github.com/example/widgets.git", "revision": "main", "default_branch": "main", "branch": "backstage/fixture", "designated_repository": "example/widgets" },
+  "harness": { "adapter": "fake", "provider": "none", "model": "none", "prompt": "Print a line", "options": {} },
+  "execution": { "image": "backstage-worker:0.1.0", "command": ["bash", "-lc", "printf 'container-ok\\n'"], "timeout_seconds": 10, "credential_refs": [], "mounts": [] },
+  "policy": { "name": "steel-thread-v1", "allowed_actions": ["clone", "push_branch", "create_draft_pr"] },
+  "context_grants": []
+}

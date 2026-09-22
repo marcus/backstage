@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/outcome-v2.json",
+  "title": "Backstage structured outcome v2",
+  "description": "v2 exists because raw.events had to stop being a whole transcript carried inside the outcome. A v1 document stamped 1 promises that raw.events, when present, is the vendor transcript; dropping it while keeping the stamp would silently change what an already-produced document means. So v2 says the detail lives in captured streams and names them, keeps logs as an explicitly bounded tail, and makes capture coverage first-class. Domain::Outcome#project_v1 renders a v2 document back into a valid v1 one for any reader still asking for that contract.",
+  "type": "object",
+  "required": ["schema_version", "status", "summary", "process"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "status": { "enum": ["succeeded", "incomplete", "failed", "cancelled", "timed_out"] },
+    "summary": { "type": "string" },
+    "process": {
+      "type": "object",
+      "required": ["exit_code", "signal"],
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "signal": { "type": ["integer", "string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cost": { "type": ["number", "null"] },
+        "cost_trusted": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "review": {
+      "type": ["object", "null"],
+      "required": ["verdict", "summary", "independent", "reviewer_session_id"],
+      "properties": {
+        "verdict": { "enum": ["approved", "changes_requested", "blocked"] },
+        "reviewer_session_id": { "type": "string" },
+        "independent": { "const": true },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "logs": {
+      "type": ["string", "null"],
+      "description": "A bounded tail of the runtime's output, for diagnostics only. It is the last log_tail_bytes bytes, not the run's output; logs_truncated says whether anything was dropped. The complete stream is in the capture artifacts."
+    },
+    "logs_truncated": { "type": "boolean" },
+    "log_tail_bytes": { "type": ["integer", "null"] },
+    "capture": {
+      "type": ["object", "null"],
+      "required": ["status"],
+      "description": "What is actually known about this run's output. status is the weakest coverage any of its streams reached, so a reader never has to compute it. 'open' means a stream was still being written when this block was taken; only recovery, which knows the run is over, may turn that into a 'gap'.",
+      "properties": {
+        "status": { "enum": ["complete", "truncated", "gap", "failed", "open"] },
+        "bytes": { "type": ["integer", "null"] },
+        "limit_bytes": { "type": ["integer", "null"] },
+        "stream_id": { "type": ["string", "null"] },
+        "last_offset": { "type": ["integer", "null"] },
+        "error": { "type": ["string", "null"] },
+        "updated_at": { "type": ["string", "null"] },
+        "streams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stream_id", "coverage"],
+            "properties": {
+              "stream_id": { "type": "string" },
+              "step": { "type": ["string", "null"] },
+              "phase": { "type": ["string", "null"] },
+              "bytes": { "type": ["integer", "null"] },
+              "records": { "type": ["integer", "null"] },
+              "chunks": { "type": ["integer", "null"] },
+              "malformed": { "type": ["integer", "null"] },
+              "coverage": { "enum": ["complete", "truncated", "gap", "failed", "open"] },
+              "last_offset": { "type": ["integer", "null"] },
+              "artifact_ids": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "raw": {
+      "type": ["object", "null"],
+      "description": "What the vendor said about itself. The transcript is no longer inlined: stream_refs names the captured streams that hold it.",
+      "properties": {
+        "vendor": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "authoritative_message": { "type": ["object", "null"] },
+        "stream_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stream_id"],
+            "properties": {
+              "stream_id": { "type": "string" },
+              "artifact_id": { "type": ["string", "null"] },
+              "records": { "type": ["integer", "null"] },
+              "bytes": { "type": ["integer", "null"] },
+              "coverage": { "enum": ["complete", "truncated", "gap", "failed", "open"] }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "interrupted": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

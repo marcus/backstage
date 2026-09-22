@@ -1,0 +1,7 @@
+.env
+.todos/
+.backstage/
+
+# graphify knowledge graph cache
+graphify-out/
+.claude/worktrees/

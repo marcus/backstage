@@ -1,0 +1,304 @@
+// Authored from the product overview and the Backstage README, 2026-09-09.
+// Reviewed against the cited Backstage source and controlling docs on 2026-09-09. This remains a
+// curated architecture explanation, not an exhaustive code scan or a guarantee of runtime authority.
+// Durable activity (slice 1) and runtime capture (slice 2) of
+// docs/plans/active/activity-and-effects/README.md are current. Slices 3-5 (fan-out delivery,
+// replies, gated operations) remain proposed; outputs.deploy is unchanged by this update.
+specification {
+  element subsystem
+  element component
+  element agent
+  element store
+  element adapter
+  relationship sends
+  relationship reads
+  relationship records
+  relationship authorizes
+  tag current
+  tag proposed
+}
+model {
+  intake = subsystem 'Intake' {
+    description 'Authorized work enters through the CLI or td polling.'
+    metadata { uid 'intake' fractalColor '#759EB5' evidence 'README.md#agent-facing-cli' }
+    cli = adapter 'Manual CLI' {
+      description 'Submit and inspect work through a noninteractive command surface.'
+      metadata { uid 'intake.cli' fractalColor '#759EB5' evidence ['lib/backstage/surfaces/cli.rb', 'test/cli_test.rb', 'test/dispatch_cli_test.rb'] }
+      commands = component 'Command parser & renderer' {
+        description 'Map deterministic commands and JSON or JSONL output to the shared application system.'
+        metadata { uid 'intake.cli.commands' fractalColor '#759EB5' evidence ['lib/backstage/surfaces/cli.rb', 'test/cli_test.rb'] }
+      }
+    }
+    td = adapter 'td polling' {
+      description 'Observe configured issue sources and reconcile repeated observations.'
+      metadata { uid 'intake.td' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/trigger.rb', 'lib/backstage/adapters/td/work_source.rb', 'test/td_adapters_test.rb'] }
+      trigger = component 'Authorized trigger' {
+        description 'Poll only eligible td issues and record a changed source receipt without growing history for unchanged checks.'
+        technology 'Adapters::Td::Trigger'
+        metadata { uid 'intake.td.trigger' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/trigger.rb', 'test/td_adapters_test.rb'] }
+      }
+      source = component 'Work source reconciliation' {
+        description 'Turn an authorized issue into idempotent Backstage work and own its later td review and handoff writes.'
+        technology 'Adapters::Td::WorkSource'
+        metadata { uid 'intake.td.source' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/work_source.rb', 'test/td_adapters_test.rb'] }
+      }
+      trigger .sends source 'Authorized issue' { metadata { uid 'td-trigger-reconcile' } }
+    }
+    events = adapter 'Schedules & events' {
+      #proposed
+      description 'Future event sources feed the same authorized work model.'
+      metadata { uid 'intake.events' fractalColor '#759EB5' }
+    }
+  }
+  queue = subsystem 'Work queue' {
+    description 'Accepted work survives restarts, human waits and delayed retries.'
+    metadata { uid 'queue' fractalColor '#9A91C4' evidence 'README.md#agent-facing-cli' }
+    dispatch = component 'Durable dispatcher' {
+      description 'Advance explicitly accepted work through bounded, recoverable passes.'
+      technology 'Application::Dispatcher'
+      metadata { uid 'queue.dispatch' fractalColor '#9A91C4' evidence ['lib/backstage/application/dispatcher.rb', 'test/dispatcher_test.rb', 'test/dispatch_cli_test.rb'] }
+      intents = component 'Intents & claims' {
+        description 'Accept one durable intent per work item, then fence each pass with a revisioned ownership claim.'
+        metadata { uid 'queue.dispatch.intents' fractalColor '#9A91C4' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/adapters/local_files/dispatch_ownership.rb', 'test/dispatcher_test.rb'] }
+      }
+      passes = component 'Pass & retry policy' {
+        description 'Classify readiness, dispatch eligible work, and delay only retryable failures within the recorded budget.'
+        metadata { uid 'queue.dispatch.passes' fractalColor '#739886' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/domain/retry_policy.rb', 'test/dispatcher_test.rb'] }
+      }
+      effects = component 'Unresolved effect gate' {
+        description 'Refuse a new pass while a prior GitHub or td effect remains unresolved; recovery reports the state but does not decide it away.'
+        metadata { uid 'queue.dispatch.effects' fractalColor '#B59669' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/adapters/github/review_change.rb', 'lib/backstage/adapters/td/work_source.rb', 'test/dispatcher_test.rb'] }
+      }
+      intents .sends passes 'Claimed work' { metadata { uid 'dispatch-claim-pass' } }
+      effects .authorizes passes 'No unresolved effect' { metadata { uid 'dispatch-effect-gate' } }
+    }
+    recovery = component 'Recovery' {
+      description 'Reconcile interrupted attempts before continuing the recorded journey.'
+      technology 'Application::Recovery'
+      metadata { uid 'queue.recovery' fractalColor '#9A91C4' evidence ['lib/backstage/application/recovery.rb', 'test/recovery_test.rb'] }
+      runs = component 'Run reconciliation' {
+        description 'Compare persisted outcomes and capture with runtime presence; never fabricate completion or replace an unknown live worker.'
+        metadata { uid 'queue.recovery.runs' fractalColor '#82A6B6' evidence ['lib/backstage/application/recovery.rb', 'lib/backstage/adapters/docker/presence.rb', 'test/recovery_test.rb'] }
+      }
+      runs .sends dispatch.passes 'Reconciled status' { metadata { uid 'recovery-pass-status' } }
+    }
+  }
+  core = subsystem 'Backstage Core' {
+    description 'Own lifecycle, policy and the audit trail. Dispatch isolated agents.'
+    metadata { uid 'core' fractalColor '#739886' evidence 'README.md#design-boundaries' }
+    lifecycle = component 'Lifecycle' {
+      description 'Record each transition with a revision guard and durable history.'
+      metadata { uid 'core.lifecycle' fractalColor '#739886' evidence ['lib/backstage/application/engine.rb', 'lib/backstage/application/workflow_service.rb', 'lib/backstage/domain/workflow.rb'] }
+      admission = component 'Work admission' {
+        description 'Create idempotent work records with the compiled workflow and bound execution identity.'
+        technology 'Application::Engine'
+        metadata { uid 'core.lifecycle.admission' fractalColor '#739886' evidence ['lib/backstage/application/engine.rb', 'test/core_test.rb', 'test/durable_restart_test.rb'] }
+      }
+      transitions = component 'Guarded transitions' {
+        description 'Apply only valid workflow changes after checking actor entry, revision, evidence and decision authority.'
+        technology 'Application::WorkflowService'
+        metadata { uid 'core.lifecycle.transitions' fractalColor '#739886' evidence ['lib/backstage/application/workflow_service.rb', 'lib/backstage/domain/workflow.rb', 'test/workflow_service_test.rb'] }
+      }
+      admission .sends transitions 'Start and finish work' { metadata { uid 'admission-transitions' } }
+    }
+    policy = component 'Authority & policy' {
+      description 'Bind actor authority to its entry point and scope each requested effect.'
+      metadata { uid 'core.policy' fractalColor '#B59669' evidence ['lib/backstage/application/workflow_service.rb', 'lib/backstage/domain/repository_authority.rb', 'lib/backstage/configuration/deployment_pack.rb'] }
+      actors = component 'Entry authority' {
+        description 'Derive authority from the trusted CLI, worker or reviewer entry context; callers cannot self-assert a stronger role.'
+        metadata { uid 'core.policy.actors' fractalColor '#B59669' evidence ['lib/backstage/application/workflow_service.rb', 'lib/backstage/application/worker.rb', 'test/workflow_service_test.rb'] }
+      }
+      repository = component 'Repository authority' {
+        description 'Constrain the designated repository, branch and base before a materialized change can be published.'
+        technology 'Domain::RepositoryAuthority'
+        metadata { uid 'core.policy.repository' fractalColor '#B59669' evidence ['lib/backstage/domain/repository_authority.rb', 'lib/backstage/application/runners/container_phase_runner.rb', 'test/github_adapters_test.rb'] }
+      }
+      actors .authorizes lifecycle.transitions 'Transition actor' { metadata { uid 'actor-transition-authority' } }
+    }
+    activity = component 'Durable activity log' {
+      description 'Record every acknowledged lifecycle change as an immutable, ordered event committed alongside the state change it explains.'
+      metadata { uid 'core.activity' fractalColor '#739886' evidence ['lib/backstage/domain/activity.rb', 'lib/backstage/application/activity_recorder.rb', 'lib/backstage/application/activity_query.rb', 'schemas/activity-event-v1.json'] }
+      recorder = component 'Event recorder' {
+        description 'Build event envelopes with producer identity and correlation. Callers commit them with state; building an event does not commit history.'
+        technology 'Application::ActivityRecorder'
+        metadata { uid 'core.activity.recorder' fractalColor '#739886' evidence ['lib/backstage/application/activity_recorder.rb', 'lib/backstage/application/workflow_service.rb', 'test/activity_emitters_test.rb'] }
+      }
+      envelope = component 'Event contract' {
+        description 'Define event types, provenance, related IDs and content fingerprints. Bound summaries and payloads; detail stays in artifacts.'
+        technology 'Domain::Activity + schema v1'
+        metadata { uid 'core.activity.envelope' fractalColor '#B59669' evidence ['lib/backstage/domain/activity.rb', 'schemas/activity-event-v1.json', 'test/activity_domain_test.rb'] }
+      }
+      persistence = component 'Atomic store contract' {
+        description 'Commit state and events together. Assign order, reconcile exact retries and refuse conflicts. This is the activity-facing part of the shared Store port.'
+        technology 'Ports::Store'
+        metadata { uid 'core.activity.persistence' fractalColor '#9A91C4' evidence ['lib/backstage/ports/store.rb', 'lib/backstage/adapters/jsonl/store.rb', 'test/activity_store_test.rb'] }
+      }
+      query = component 'Activity queries' {
+        description 'List, show and follow committed history without writes. Follow polls bounded pages and resumes with an opaque cursor.'
+        technology 'Application::ActivityQuery'
+        metadata { uid 'core.activity.query' fractalColor '#759EB5' evidence ['lib/backstage/application/activity_query.rb', 'lib/backstage/surfaces/cli.rb', 'lib/backstage/bootstrap/system.rb', 'test/activity_query_test.rb', 'test/activity_cli_test.rb'] }
+      }
+      recorder .reads envelope 'Build envelope' { metadata { uid 'activity-build-envelope' } }
+      recorder .reads persistence 'Deployment identity' { metadata { uid 'activity-deployment-identity' } }
+      query .reads persistence 'Pages and event lookup' { metadata { uid 'activity-read-pages' } }
+      persistence .reads envelope 'Validate and fingerprint' { metadata { uid 'activity-validate-envelope' } }
+
+    }
+    agents = subsystem 'Isolated agents' {
+      description 'Fresh implementation and review containers operate with distinct authority.'
+      metadata { uid 'core.agents' fractalColor '#82A6B6' }
+      implement = agent 'Implementation' {
+        description 'Work in an uncredentialed checkout and produce a bounded candidate patch.'
+        metadata { uid 'core.agents.implement' fractalColor '#82A6B6' }
+      }
+      review = agent 'Independent review' {
+        description 'Inspect the exact candidate in a fresh clone-only review container.'
+        metadata { uid 'core.agents.review' fractalColor '#82A6B6' }
+      }
+    }
+    execution = component 'Execution coordinator' {
+      description 'Host-side coordinator prepares scoped workspaces, launches isolated phases, validates materialized changes and invokes publication.'
+      technology 'Application::Runners::ContainerPhaseRunner'
+      metadata { uid 'core.agents.runner' fractalColor '#739886' evidence ['lib/backstage/application/runners/container_phase_runner.rb', 'test/container_phase_runner_test.rb'] }
+    }
+    verdict = component 'Review verdict contract' {
+      description 'Host-side parser requires a bounded approved, changes-requested or blocked verdict with reviewer provenance.'
+      technology 'Application::Runners::IndependentReviewRunner'
+      metadata { uid 'core.agents.verdict' fractalColor '#739886' evidence ['lib/backstage/application/runners/independent_review_runner.rb', 'test/container_phase_runner_test.rb'] }
+    }
+    execution .sends agents.implement 'Launch implementation phase' { metadata { uid 'implementation-phase-runner' } }
+    execution .sends agents.review 'Launch clone-only review' { metadata { uid 'runner-review-phase' } }
+    agents.review .sends verdict 'Verdict JSON' { metadata { uid 'review-verdict-contract' } }
+    capture = component 'Runtime capture' {
+      description 'Redact, frame and durably persist each runtime step output as fsynced chunks with per-stream coverage.'
+      technology 'Application::RuntimeCapture'
+      metadata { uid 'core.capture' fractalColor '#82A6B6' evidence ['lib/backstage/application/runtime_capture.rb', 'lib/backstage/application/capture_sink.rb', 'lib/backstage/support/record_framer.rb', 'lib/backstage/adapters/pi/stream_interpreter.rb'] }
+      stream = component 'Redact & frame stream' {
+        description 'Remove split secrets before framing bounded UTF-8 records, so durable offsets name only retained bytes.'
+        technology 'SecretGuard + RecordFramer'
+        metadata { uid 'core.capture.stream' fractalColor '#82A6B6' evidence ['lib/backstage/application/runtime_capture.rb', 'lib/backstage/support/secret_guard.rb', 'lib/backstage/support/record_framer.rb', 'test/runtime_capture_test.rb'] }
+      }
+      interpret = component 'Interpret observations' {
+        description 'Turn complete Pi protocol records and repository sentinels into bounded, typed observations without re-parsing log text.'
+        technology 'Ports::StreamInterpreter'
+        metadata { uid 'core.capture.interpret' fractalColor '#759EB5' evidence ['lib/backstage/adapters/pi/stream_interpreter.rb', 'lib/backstage/application/runners/sentinel_interpreter.rb', 'test/pi_stream_interpreter_test.rb'] }
+      }
+      durable = component 'Durable chunk sink' {
+        description 'Fsync and rename chunk files before atomically committing their activity event and stream checkpoint.'
+        technology 'CaptureSink::Durable'
+        metadata { uid 'core.capture.durable' fractalColor '#9A91C4' evidence ['lib/backstage/application/capture_sink.rb', 'lib/backstage/adapters/local_files/artifact_store.rb', 'lib/backstage/adapters/jsonl/store.rb', 'test/capture_replay_dedupe_test.rb'] }
+      }
+      coverage = component 'Coverage gate' {
+        description 'Expose complete, truncated, gap or failed capture so finalization, review verdicts and publication refuse unaudited output.'
+        technology 'Application::Runners::ContainerPhaseRunner'
+        metadata { uid 'core.capture.coverage' fractalColor '#B59669' evidence ['lib/backstage/application/runners/container_phase_runner.rb', 'lib/backstage/domain/outcome.rb', 'test/capture_bounds_proof_test.rb'] }
+      }
+      stream .sends interpret 'Complete records' { metadata { uid 'capture-frame-interpret' } }
+      interpret .records durable 'Chunk observations' { metadata { uid 'capture-observation-chunk' } }
+      durable .sends coverage 'Coverage summary' { metadata { uid 'capture-chunk-coverage' } }
+    }
+    artifacts = store 'State & artifacts' {
+      description 'Keep JSONL lifecycle state, candidate digests and inspectable run evidence.'
+      technology 'JSONL + files'
+      metadata { uid 'core.artifacts' fractalColor '#9A91C4' evidence ['lib/backstage/ports/store.rb', 'lib/backstage/adapters/jsonl/store.rb'] }
+      records = component 'Operational records' {
+        description 'Persist work, runs, intents, activity and external-effect state through one revisioned Store port.'
+        technology 'Ports::Store + Jsonl::Store'
+        metadata { uid 'core.artifacts.records' fractalColor '#9A91C4' evidence ['lib/backstage/ports/store.rb', 'lib/backstage/adapters/jsonl/store.rb', 'test/jsonl_atomicity_test.rb'] }
+      }
+      evidence = component 'Run evidence files' {
+        description 'Hold candidate patches and append-safe stream chunks as inspectable files referenced by durable records.'
+        technology 'LocalFiles::ArtifactStore'
+        metadata { uid 'core.artifacts.evidence' fractalColor '#9A91C4' evidence ['lib/backstage/adapters/local_files/artifact_store.rb', 'test/artifact_stream_test.rb'] }
+      }
+    }
+    publisher = adapter 'Scoped publisher' {
+      description 'Revalidate repository and draft-only authority in a separate credentialed executor.'
+      metadata { uid 'core.publisher' fractalColor '#B59669' evidence ['lib/backstage/application/runners/container_phase_runner.rb', 'lib/backstage/adapters/github/review_change.rb', 'test/container_phase_runner_test.rb'] }
+      ledger = component 'Draft effect ledger' {
+        description 'Persist the intended draft pull request before its effect and reconcile the same idempotency key on retry.'
+        technology 'Adapters::GitHub::ReviewChange'
+        metadata { uid 'core.publisher.ledger' fractalColor '#B59669' evidence ['lib/backstage/adapters/github/review_change.rb', 'test/github_adapters_test.rb'] }
+      }
+      protocol = component 'Credentialed repository protocol' {
+        description 'Use the sealed repository command only after branch, base, origin and capture-coverage checks pass.'
+        technology 'ContainerPhaseRunner'
+        metadata { uid 'core.publisher.protocol' fractalColor '#B59669' evidence ['lib/backstage/application/runners/container_phase_runner.rb', 'lib/backstage/domain/repository_authority.rb', 'test/container_phase_runner_test.rb'] }
+      }
+      ledger .authorizes protocol 'Pending draft effect' { metadata { uid 'publication-ledger-protocol' } }
+    }
+  }
+  inputs = subsystem 'Job inputs' {
+    description 'Repositories and compiled execution configuration shape each bounded job.'
+    metadata { uid 'inputs' fractalColor '#B59669' evidence 'README.md#design-boundaries' }
+    repos = adapter 'Repository context' {
+      description 'Carry named, read-only repository grants in the job bundle for the scoped phase runner to materialize.'
+      metadata { uid 'inputs.repos' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'lib/backstage/application/runners/container_phase_runner.rb', 'test/container_phase_runner_test.rb'] }
+    }
+    config = component 'Execution config' {
+      description 'Compile pack and target settings for the harness, model, runtime and authority.'
+      technology 'Configuration::DeploymentPack'
+      metadata { uid 'inputs.config' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'docs/guides/active/config-model.md', 'test/configuration_test.rb'] }
+      validation = component 'Pack validation' {
+        description 'Load safe YAML, reject secrets and incomplete adapters, and validate targets, routes, instructions, workflows and capture limits.'
+        metadata { uid 'inputs.config.validation' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'test/configuration_test.rb'] }
+      }
+      compiler = component 'Job bundle compiler' {
+        description 'Bind admitted work to its target and source, then compile repository, harness, execution, policy and read-only context grants.'
+        metadata { uid 'inputs.config.compiler' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'schemas/job-bundle-v1.json', 'test/configuration_test.rb', 'test/contract_validator_test.rb'] }
+      }
+      validation .sends compiler 'Validated definitions' { metadata { uid 'config-validated-bundle' } }
+    }
+    sources = adapter 'Additional sources' {
+      #proposed
+      description 'Future MCP, logs, databases, designs and skills enrich job context.'
+      metadata { uid 'inputs.sources' fractalColor '#B59669' }
+    }
+  }
+  outputs = subsystem 'Outputs' {
+    description 'Draft pull requests and review evidence complete the current journey.'
+    metadata { uid 'outputs' fractalColor '#89A579' evidence 'README.md' }
+    drafts = adapter 'Draft pull requests' {
+      description 'Publish only the authorized branch and draft PR after finalization and capture-coverage checks.'
+      metadata { uid 'outputs.drafts' fractalColor '#89A579' }
+    }
+    handoff = adapter 'td handoff' {
+      description 'Return artifacts and review evidence through reconciled, ledgered writes.'
+      metadata { uid 'outputs.handoff' fractalColor '#89A579' }
+    }
+    deploy = adapter 'Deploy & repair' {
+      #proposed
+      description 'Planned: human approval bound to the exact action, scoped execution and result verification.'
+      metadata { uid 'outputs.deploy' fractalColor '#89A579' evidence 'docs/plans/active/activity-and-effects/README.md' }
+    }
+  }
+  intake.cli.commands .sends queue.dispatch.intents 'Accept work' { metadata { uid 'manual-accept' } }
+  intake.td.source .sends queue.dispatch.intents 'Reconcile work' { metadata { uid 'poll-accept' } }
+  intake.events .sends queue.dispatch 'Submit event' { #proposed metadata { uid 'event-accept' } }
+  queue.dispatch.passes .sends core.lifecycle.transitions 'Advance lifecycle' { metadata { uid 'dispatch-lifecycle' } }
+  queue.recovery .reads core.artifacts 'Reconcile history' { metadata { uid 'recovery-history' } }
+  inputs.config.compiler .sends core.policy 'Compiled policy' { metadata { uid 'config-policy' } }
+  inputs.repos .sends core.execution 'Granted context' { metadata { uid 'repo-context' } }
+  core.lifecycle.transitions .sends core.execution 'Dispatch' { metadata { uid 'dispatch-implementation' } }
+  core.agents.implement .records core.artifacts 'Candidate patch' { metadata { uid 'candidate-artifact' } }
+  core.artifacts .sends core.agents.review 'Exact candidate' { metadata { uid 'candidate-review' } }
+  core.agents.review .records core.artifacts 'Review verdict' { metadata { uid 'review-evidence' } }
+  core.policy.repository .authorizes core.publisher 'Revalidate effect' { metadata { uid 'authorize-publish' } }
+  core.execution .sends core.publisher 'Finalized candidate' { metadata { uid 'candidate-publish' } }
+  core.publisher.protocol .sends outputs.drafts 'Publish draft' { metadata { uid 'publish-draft' } }
+  core.publisher .sends outputs.handoff 'Return evidence' { metadata { uid 'publish-handoff' } }
+  core.policy .authorizes outputs.deploy 'Human-approved action' { #proposed metadata { uid 'authorize-deploy' } }
+  core.lifecycle.transitions .records core.activity 'Lifecycle event' { metadata { uid 'lifecycle-activity' } }
+  intake.cli .reads core.activity 'Inspect history' { metadata { uid 'cli-activity' } }
+  core.activity .records core.artifacts 'Envelope commit' { metadata { uid 'activity-commit' } }
+  core.agents.implement .records core.capture 'Runtime stream' { metadata { uid 'implement-capture' } }
+  core.agents.review .records core.capture 'Runtime stream' { metadata { uid 'review-capture' } }
+  core.capture.durable .records core.artifacts.evidence 'Durable chunk' { metadata { uid 'capture-artifact' } }
+  queue.dispatch.intents .records core.artifacts.records 'Persist intent and claim' { metadata { uid 'intent-operational-record' } }
+  queue.recovery.runs .reads core.artifacts.records 'Persisted run state' { metadata { uid 'recovery-operational-record' } }
+  queue.dispatch.effects .reads core.artifacts.records 'Effect ledger state' { metadata { uid 'dispatch-effect-record' } }
+  core.activity.persistence .reads core.artifacts.records 'Atomic state and event commit' { metadata { uid 'activity-operational-record' } }
+  core.capture.durable .records core.artifacts.records 'Checkpoint and activity' { metadata { uid 'capture-operational-record' } }
+  core.publisher.ledger .records core.artifacts.records 'Draft action state' { metadata { uid 'publisher-operational-record' } }
+}
+views { view index { include * } }

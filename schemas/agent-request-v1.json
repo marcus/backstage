@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/agent-request-v1.json",
+  "title": "Backstage worker transition request v1",
+  "description": "One line a running worker appends to the bounded channel its run owns. The worker's role is derived from that run, so this payload carries no actor field.",
+  "type": "object",
+  "required": ["transition"],
+  "properties": {
+    "transition": { "type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9_]*$" },
+    "reason": { "type": ["string", "null"] },
+    "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "request_id": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

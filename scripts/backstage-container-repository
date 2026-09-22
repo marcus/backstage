@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bundle_path=${BACKSTAGE_JOB_BUNDLE:-/backstage/job-bundle.json}
+action=${1:-}
+
+repo_url=$(jq -r '.repository.url' "$bundle_path")
+repo_name=$(jq -r '.repository.designated_repository' "$bundle_path")
+revision=$(jq -r '.repository.revision' "$bundle_path")
+default_branch=$(jq -r '.repository.default_branch' "$bundle_path")
+branch=$(jq -r '.repository.branch' "$bundle_path")
+
+backstage-repository-authority origin "$repo_name" "$default_branch" "$repo_url" "$branch"
+if [[ "$action" == finalize ]]; then
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    printf 'secret-free materialization received GH_TOKEN\n' >&2
+    exit 65
+  fi
+else
+  if [[ -z "${GH_TOKEN:-}" ]]; then
+    printf 'GH_TOKEN is required for %s\n' "$action" >&2
+    exit 65
+  fi
+  auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+  export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+  export GIT_TERMINAL_PROMPT=0
+fi
+
+case "$action" in
+  prepare)
+    if [[ -e /workspace/repo ]]; then
+      printf 'workspace already contains repo\n' >&2
+      exit 66
+    fi
+    mkdir -p /workspace/repo
+    git -C /workspace/repo init --quiet
+    git -C /workspace/repo remote add origin "$repo_url"
+    git -C /workspace/repo fetch --depth 1 origin "$revision"
+    base_resolved=$(git -C /workspace/repo rev-parse FETCH_HEAD)
+    git -C /workspace/repo update-ref refs/backstage/base "$base_resolved"
+    if git -C /workspace/repo ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
+      git -C /workspace/repo fetch --depth 1 origin "refs/heads/$branch"
+      resolved=$(git -C /workspace/repo rev-parse FETCH_HEAD)
+      reused=true
+    else
+      resolved=$base_resolved
+      reused=false
+    fi
+    git -C /workspace/repo checkout --quiet -b "$branch" "$resolved"
+    jq -cn --arg resolved "$resolved" --arg branch "$branch" --argjson reused "$reused" '{type:"repository_prepared",resolved_revision:$resolved,branch:$branch,reused_remote_branch:$reused}'
+    ;;
+  context)
+    index=${2:-}
+    [[ "$index" =~ ^[0-9]+$ ]] || { printf 'context grant index is required\n' >&2; exit 64; }
+    kind=$(jq -r ".context_grants[$index].kind" "$bundle_path")
+    context_name=$(jq -r ".context_grants[$index].name" "$bundle_path")
+    context_origin=$(jq -r ".context_grants[$index].origin" "$bundle_path")
+    context_revision=$(jq -r ".context_grants[$index].revision" "$bundle_path")
+    context_mount=$(jq -r ".context_grants[$index].mount" "$bundle_path")
+    if [[ "$kind" != repo || ! "$context_origin" =~ ^https://github.com/[^/]+/[^/]+\.git$ || ! "$context_mount" =~ ^[a-zA-Z0-9._/-]+$ || "$context_mount" == /* || "$context_mount" == *..* ]]; then
+      printf 'invalid repository context grant\n' >&2
+      exit 64
+    fi
+    destination="/workspace/contexts/$context_name"
+    [[ ! -e "$destination" ]] || { printf 'context destination already exists\n' >&2; exit 66; }
+    mkdir -p "$destination"
+    git -C "$destination" init --quiet
+    git -C "$destination" remote add origin "$context_origin"
+    git -C "$destination" fetch --depth 1 origin "$context_revision"
+    context_resolved=$(git -C "$destination" rev-parse FETCH_HEAD)
+    git -C "$destination" checkout --quiet --detach "$context_resolved"
+    chmod -R a-w "$destination"
+    jq -cn --arg name "$context_name" --arg origin "$context_origin" --arg revision "$context_resolved" --arg mount "$context_mount" '{type:"context_materialized",kind:"repo",name:$name,origin:$origin,resolved_revision:$revision,mount:$mount,read_only:true}'
+    ;;
+  finalize)
+    cd /workspace/repo
+    actual_origin=$(git remote get-url origin)
+    current=$(git branch --show-current)
+    backstage-repository-authority checkout "$repo_name" "$default_branch" "$actual_origin" "$current" "$branch"
+    base_revision=$(git rev-parse HEAD)
+    index_path=/workspace/change.index
+    patch_path=/workspace/change.patch
+    manifest_path=/workspace/change.json
+    trap 'rm -f "$index_path"' EXIT
+    GIT_INDEX_FILE="$index_path" git read-tree HEAD
+    GIT_INDEX_FILE="$index_path" git add --all
+    GIT_INDEX_FILE="$index_path" git diff --cached --binary --full-index --no-ext-diff --no-textconv HEAD >"$patch_path"
+    patch_size=$(wc -c <"$patch_path")
+    if [[ "$patch_size" -gt 10485760 ]]; then
+      printf 'materialized change exceeds 10 MiB limit\n' >&2
+      exit 68
+    fi
+    patch_sha256=$(sha256sum "$patch_path" | cut -d' ' -f1)
+    jq -cn --arg branch "$branch" --arg base "$base_revision" --arg sha256 "$patch_sha256" --argjson size "$patch_size" '{type:"repository_materialized",branch:$branch,base_revision:$base,patch_sha256:$sha256,patch_size:$size}' | tee "$manifest_path"
+    ;;
+  publish)
+    manifest_path=/workspace/change.json
+    patch_path=/workspace/change.patch
+    [[ -f "$manifest_path" && -f "$patch_path" ]] || { printf 'materialized change is required\n' >&2; exit 66; }
+    materialized_branch=$(jq -r '.branch' "$manifest_path")
+    base_revision=$(jq -r '.base_revision' "$manifest_path")
+    expected_sha256=$(jq -r '.patch_sha256' "$manifest_path")
+    expected_size=$(jq -r '.patch_size' "$manifest_path")
+    [[ "$materialized_branch" == "$branch" && "$expected_size" -le 10485760 ]] || { printf 'materialized change metadata is outside authority\n' >&2; exit 64; }
+    [[ "$(wc -c <"$patch_path")" == "$expected_size" && "$(sha256sum "$patch_path" | cut -d' ' -f1)" == "$expected_sha256" ]] || { printf 'materialized change digest mismatch\n' >&2; exit 64; }
+
+    export GIT_CONFIG_SYSTEM=/dev/null
+    export GIT_CONFIG_GLOBAL=/dev/null
+    export GIT_ATTR_NOSYSTEM=1
+    export GIT_SSH_COMMAND=false
+    export GH_CONFIG_DIR=/tmp/backstage-gh-empty
+    export GH_PROMPT_DISABLED=1
+    export GH_HOST=github.com
+    [[ ! -e /workspace/publication ]] || { printf 'publication checkout already exists\n' >&2; exit 66; }
+    mkdir -p "$GH_CONFIG_DIR" /workspace/publication
+    safe_git() {
+      git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= "$@"
+    }
+
+    safe_git -C /workspace/publication init --quiet
+    safe_git -C /workspace/publication remote add origin "$repo_url"
+    if safe_git ls-remote --exit-code --heads "$repo_url" "refs/heads/$branch" >/dev/null 2>&1; then
+      fetch_ref="refs/heads/$branch"
+      reused=true
+    else
+      fetch_ref=$revision
+      reused=false
+    fi
+    safe_git -C /workspace/publication fetch --depth 1 "$repo_url" "$fetch_ref"
+    resolved=$(safe_git -C /workspace/publication rev-parse FETCH_HEAD)
+    [[ "$resolved" == "$base_revision" ]] || { printf 'materialized change base no longer matches authorized remote\n' >&2; exit 69; }
+    safe_git -C /workspace/publication checkout --quiet -b "$branch" "$resolved"
+    actual_origin=$(safe_git -C /workspace/publication remote get-url origin)
+    current=$(safe_git -C /workspace/publication branch --show-current)
+    backstage-repository-authority checkout "$repo_name" "$default_branch" "$actual_origin" "$current" "$branch"
+    safe_git -C /workspace/publication apply --binary --index --whitespace=nowarn "$patch_path"
+    if ! safe_git -C /workspace/publication diff --cached --quiet; then
+      GIT_AUTHOR_NAME=Backstage GIT_AUTHOR_EMAIL=backstage@local \
+        GIT_COMMITTER_NAME=Backstage GIT_COMMITTER_EMAIL=backstage@local \
+        safe_git -C /workspace/publication commit --quiet -m "Implement ${branch#backstage/}"
+    elif [[ "$reused" == false ]]; then
+      printf 'implementation produced no change\n' >&2
+      exit 67
+    fi
+
+    actual_origin=$(safe_git -C /workspace/publication remote get-url origin)
+    current=$(safe_git -C /workspace/publication branch --show-current)
+    backstage-repository-authority checkout "$repo_name" "$default_branch" "$actual_origin" "$current" "$branch"
+    safe_git -C /workspace/publication push "$repo_url" "HEAD:refs/heads/$branch"
+
+    actual_origin=$(safe_git -C /workspace/publication remote get-url origin)
+    current=$(safe_git -C /workspace/publication branch --show-current)
+    backstage-repository-authority checkout "$repo_name" "$default_branch" "$actual_origin" "$current" "$branch"
+    existing=$(gh pr list --repo "$repo_name" --head "$branch" --state all --json url,number,isDraft,headRefName,baseRefName,headRepository,headRepositoryOwner --limit 1)
+    if [[ "$(jq 'length' <<<"$existing")" -gt 0 ]]; then
+      returned_repo=$(jq -r '.[0] | .headRepository.nameWithOwner // ((.headRepositoryOwner.login // .headRepositoryOwner) + "/" + (.headRepository.name // .headRepository))' <<<"$existing")
+      returned_branch=$(jq -r '.[0].headRefName' <<<"$existing")
+      returned_base=$(jq -r '.[0].baseRefName' <<<"$existing")
+      returned_draft=$(jq -r '.[0].isDraft' <<<"$existing")
+      backstage-repository-authority review "$repo_name" "$default_branch" "$returned_repo" "$returned_branch" "$branch" "$returned_base" "$returned_draft"
+      url=$(jq -r '.[0].url' <<<"$existing")
+      number=$(jq -r '.[0].number' <<<"$existing")
+      reconciled=true
+    else
+      backstage-repository-authority review "$repo_name" "$default_branch" "$repo_name" "$branch" "$branch" "$default_branch" true
+      title=$(jq -r '.work_item.title' "$bundle_path")
+      body="Backstage implementation for $(jq -r '.work_item.id' "$bundle_path"). Human approval is required; this draft cannot be merged by Backstage."
+      url=$(gh pr create --repo "$repo_name" --head "$branch" --base "$default_branch" --title "$title" --body "$body" --draft)
+      number=${url##*/}
+      returned_repo=$repo_name
+      returned_branch=$branch
+      returned_base=$default_branch
+      reconciled=false
+    fi
+    jq -cn --arg url "$url" --argjson number "$number" --arg repository "$returned_repo" --arg branch "$returned_branch" --arg base "$returned_base" --argjson reconciled "$reconciled" '{type:"repository_published",url:$url,number:$number,repository:$repository,branch:$branch,base:$base,draft:true,reconciled:$reconciled}'
+    ;;
+  *)
+    printf 'usage: backstage-container-repository prepare|context INDEX|finalize|publish\n' >&2
+    exit 64
+    ;;
+esac

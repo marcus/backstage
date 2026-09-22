@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "id": "backstage",
+  "title": "Backstage",
+  "description": "From authorized work to an independently reviewed draft pull request.",
+  "provenance": "Authored 2026-09-09 from the product overview and the Backstage README. Reviewed 2026-09-09 against the cited Backstage source and controlling docs; this remains a curated architecture explanation, not an exhaustive code scan or a guarantee of runtime authority. Evidence paths are relative to the Backstage repository. Durable activity and runtime capture are current. Deployment, schedules, additional sources, fan-out delivery and replies remain proposals. Activity component detail reviewed 2026-09-10 against the cited recorder, domain contract, Store port, JSONL adapter, query service and CLI. Dispatch, recovery, lifecycle, authority, capture and evidence detail were reviewed the same day against their cited current source and focused tests. The nesting groups collaborating responsibilities; Store and artifact files remain shared dependencies rather than per-component copies.",
+  "boundaries": [
+    {
+      "id": "host",
+      "title": "Trusted orchestration",
+      "description": "The library owns lifecycle, recorded authority and durable state.",
+      "kind": "permission",
+      "members": ["queue", "core.lifecycle", "core.policy", "core.activity", "core.agents.runner", "core.agents.verdict", "core.capture", "core.artifacts", "inputs.config"],
+      "color": "#739886"
+    },
+    {
+      "id": "sandbox",
+      "title": "Uncredentialed execution",
+      "description": "Implementation and review use separate fresh containers. Review is clone-only.",
+      "kind": "permission",
+      "members": ["core.agents.implement", "core.agents.review"],
+      "color": "#82A6B6"
+    },
+    {
+      "id": "credentialed",
+      "title": "Scoped credentials",
+      "description": "A separate publisher revalidates origin, branch, base and draft-only action before effects.",
+      "kind": "permission",
+      "members": ["core.publisher"],
+      "color": "#B59669"
+    },
+    {
+      "id": "external",
+      "title": "External systems",
+      "description": "GitHub and td writes cross an external boundary through reconciliation and the action ledger.",
+      "kind": "network",
+      "members": ["outputs"],
+      "color": "#89A579"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "overview",
+      "title": "The big picture",
+      "description": "Five parts. One accountable journey from intake to reviewed output.",
+      "expanded": [],
+      "proposed": false,
+      "lens": "structure"
+    },
+    {
+      "id": "execution",
+      "title": "Inside the engine",
+      "description": "Follow the candidate from isolated implementation through independent review.",
+      "expanded": ["core", "core.agents"],
+      "proposed": false,
+      "lens": "structure",
+      "scope": "core"
+    },
+    {
+      "id": "activity-detail",
+      "title": "How history stays trustworthy",
+      "description": "Build a fact, commit it with state, then read it without changing the work.",
+      "scope": "core.activity",
+      "expanded": ["core.activity"],
+      "proposed": false,
+      "lens": "structure"
+    },
+    {
+      "id": "dispatch-detail",
+      "title": "How work keeps moving safely",
+      "description": "Accept one intent, claim a bounded pass, then reconcile interruption before any retry.",
+      "scope": "queue",
+      "expanded": ["queue", "queue.dispatch", "queue.recovery"],
+      "proposed": false,
+      "lens": "structure"
+    },
+    {
+      "id": "capture-detail",
+      "title": "How runtime evidence stays usable",
+      "description": "Redact and frame output, commit durable chunks, then gate consequential steps on coverage.",
+      "scope": "core.capture",
+      "expanded": ["core.capture"],
+      "proposed": false,
+      "lens": "structure"
+    },
+    {
+      "id": "trust",
+      "title": "Where trust changes",
+      "description": "Separate orchestration, uncredentialed agents and scoped publication authority inside the core.",
+      "expanded": ["core", "core.agents"],
+      "proposed": false,
+      "lens": "trust",
+      "scope": "core"
+    },
+    {
+      "id": "proposal",
+      "title": "The next chapter",
+      "description": "Explore planned event sources and a human-approved deployment path.",
+      "expanded": ["intake", "outputs"],
+      "proposed": true,
+      "lens": "structure"
+    }
+  ]
+}

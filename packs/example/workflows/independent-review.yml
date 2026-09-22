@@ -1,0 +1,108 @@
+name: independent-review
+version: 1
+description: Implementation by a working agent, then a fresh independent review, ending in a draft ready for human disposition.
+initial_state: ready
+max_revisions: 2
+
+states:
+  ready:
+    description: Work is eligible to begin or continue.
+  running:
+    description: Work is being worked on. This is not a claim that a container is alive.
+  awaiting_review:
+    description: A candidate and its required evidence await independent review.
+  changes_requested:
+    description: Review returned actionable findings. Continuation keeps the candidate history.
+    continue: revise
+  needs_decision:
+    description: Work waits for a human answer or authorization within product policy.
+    awaits_decision: true
+  completed:
+    description: An independently approved draft is ready for human disposition. Nothing was merged or deployed.
+    terminal: true
+  cancelled:
+    description: The operator stopped the assignment.
+    terminal: true
+
+transitions:
+  start:
+    description: Begin implementation.
+    from: [ready]
+    to: running
+    actors: [system, human]
+    dispatch:
+      phase: implementation
+      on_success: submit_for_review
+      on_failure: execution_failed
+  report_progress:
+    description: Informational progress from the working agent. Starts nothing.
+    from: [running]
+    to: running
+    actors: [agent, system]
+  submit_for_review:
+    description: Hand a candidate to an independent reviewer.
+    from: [running]
+    to: awaiting_review
+    actors: [agent, system]
+    requires: [change_candidate]
+    dispatch:
+      phase: review
+      on_verdict:
+        approved: approve
+        changes_requested: request_changes
+        blocked: escalate
+      on_failure: escalate
+  approve:
+    description: The independent reviewer approved the candidate under review.
+    from: [awaiting_review]
+    to: completed
+    actors: [reviewer]
+    requires: [review_verdict]
+  request_changes:
+    description: The independent reviewer returned actionable findings.
+    from: [awaiting_review]
+    to: changes_requested
+    actors: [reviewer]
+    requires: [review_verdict]
+  revise:
+    description: Continue the same assignment against the reviewer's findings.
+    from: [changes_requested]
+    to: running
+    actors: [system, human]
+    counts_revision: true
+    dispatch:
+      phase: implementation
+      on_success: submit_for_review
+      on_failure: execution_failed
+  escalate:
+    description: Stop and ask a human.
+    from: [running, awaiting_review, changes_requested]
+    to: needs_decision
+    actors: [system, agent, reviewer]
+    decision:
+      question: Backstage stopped and needs a human answer. How should this assignment proceed?
+      choices: [resume_implementation, cancel]
+  resume_implementation:
+    description: A human authorized another implementation pass.
+    from: [needs_decision]
+    to: running
+    actors: [human]
+    dispatch:
+      phase: implementation
+      on_success: submit_for_review
+      on_failure: execution_failed
+  execution_failed:
+    description: A run failed or was interrupted. The failure lives on the run; the work stays eligible.
+    from: [running]
+    to: ready
+    actors: [system]
+  cancel:
+    description: Stop the assignment.
+    from: [ready, running, awaiting_review, changes_requested, needs_decision]
+    to: cancelled
+    actors: [human]
+  reactivate:
+    description: Return a cancelled assignment to the queue.
+    from: [cancelled]
+    to: ready
+    actors: [human]

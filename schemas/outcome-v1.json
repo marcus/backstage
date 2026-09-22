@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/outcome-v1.json",
+  "title": "Backstage structured outcome v1",
+  "type": "object",
+  "required": ["schema_version", "status", "summary", "process"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "status": { "enum": ["succeeded", "incomplete", "failed", "cancelled", "timed_out"] },
+    "summary": { "type": "string" },
+    "process": {
+      "type": "object",
+      "required": ["exit_code", "signal"],
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "signal": { "type": ["integer", "string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cost": { "type": ["number", "null"] },
+        "cost_trusted": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "review": {
+      "type": ["object", "null"],
+      "required": ["verdict", "summary", "independent", "reviewer_session_id"],
+      "properties": {
+        "verdict": { "enum": ["approved", "changes_requested", "blocked"] },
+        "reviewer_session_id": { "type": "string" },
+        "independent": { "const": true },
+        "summary": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "raw": { "type": ["object", "null"] }
+  },
+  "additionalProperties": true
+}

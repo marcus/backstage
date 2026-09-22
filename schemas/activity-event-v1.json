@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://backstage.local/schemas/activity-event-v1.json",
+  "title": "Backstage activity event v1",
+  "description": "One immutable historical fact in a deployment activity stream. sequence and recorded_at are assigned by the store at commit; every other field is chosen by the producer and is part of the event's canonical fingerprint.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "deployment_id",
+    "occurred_at",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "type": {
+      "enum": [
+        "work.admitted",
+        "work.transition_applied",
+        "decision.raised",
+        "decision.answered",
+        "decision.cancelled",
+        "execution.accepted",
+        "execution.started",
+        "execution.finished",
+        "execution.retry_scheduled",
+        "execution.cancellation_requested",
+        "execution.verified_completion",
+        "runtime.observed",
+        "runtime.reported_completion",
+        "agent.message_observed",
+        "agent.tool_observed",
+        "artifact.available",
+        "effect.proposed",
+        "effect.approved",
+        "effect.attempted",
+        "effect.verified",
+        "effect.failed",
+        "effect.uncertain",
+        "delivery.queued",
+        "delivery.sent",
+        "delivery.failed",
+        "delivery.uncertain",
+        "reconciliation.finding",
+        "source.checked",
+        "dispatcher.health_observed",
+        "activity.stream_started"
+      ]
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "sequence": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "occurred_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "recorded_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 64
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "provenance"
+      ],
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "provenance": {
+          "enum": [
+            "core",
+            "store",
+            "runtime_reported",
+            "agent_reported",
+            "operator",
+            "external_observation"
+          ]
+        },
+        "instance": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "offset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "work_item_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "target_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "job_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "attempt_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "request_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "transition_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "action_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "delivery_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "causation_event_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "correlation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "provider_session_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "provider_event_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "relation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "data": {
+      "type": "object",
+      "description": "Ids, states, counts and revisions only. Serialized, it may be at most 16384 bytes; a store refuses anything larger (Backstage::Domain::Activity::DATA_BYTE_LIMIT). Outcomes, transcripts and diffs belong behind an artifact_refs entry, not here."
+    }
+  },
+  "additionalProperties": false
+}
