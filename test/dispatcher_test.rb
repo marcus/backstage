@@ -66,7 +66,7 @@ class DispatcherTest < Minitest::Test
       @test = test
       @engine = test.build_engine(directory)
       @work = if workflow
-                @engine.submit(idempotency_key: "dispatcher-custom", title: "custom", description: "", workflow: workflow)
+                @engine.submit(idempotency_key: "dispatcher-custom", title: "custom", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: workflow)
               else
                 test.submit_work(@engine, workflow_name: workflow_name, key: "dispatcher-#{workflow_name}")
               end
@@ -248,7 +248,7 @@ class DispatcherTest < Minitest::Test
     in_tmpdir do |directory|
       test = harness(directory)
       test.dispatcher.accept(work_item_id: test.work_id, request_id: "accept-1")
-      other = test.engine.submit(idempotency_key: "second", title: "second", description: "", workflow: workflow("minimal"))
+      other = test.engine.submit(idempotency_key: "second", title: "second", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: workflow("minimal"))
       broken = test.dispatcher.accept(work_item_id: other.fetch("id"), request_id: "accept-2")
       # Its workflow snapshot is unreadable, so classifying it raises.
       test.engine.store.save("work_items", other.merge("workflow" => other.fetch("workflow").merge("digest" => "missing")))
@@ -893,7 +893,7 @@ class DispatcherTest < Minitest::Test
       test = harness(directory)
       test.dispatcher.accept(work_item_id: test.work_id)
       2.times do |index|
-        other = test.engine.submit(idempotency_key: "extra-#{index}", title: "extra", description: "", workflow: workflow("minimal"))
+        other = test.engine.submit(idempotency_key: "extra-#{index}", title: "extra", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: workflow("minimal"))
         test.dispatcher.accept(work_item_id: other.fetch("id"))
       end
       stopping = false
@@ -912,7 +912,7 @@ class DispatcherTest < Minitest::Test
     in_tmpdir do |directory|
       test = harness(directory)
       test.dispatcher.accept(work_item_id: test.work_id)
-      other = test.engine.submit(idempotency_key: "extra", title: "extra", description: "", workflow: workflow("minimal"))
+      other = test.engine.submit(idempotency_key: "extra", title: "extra", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: workflow("minimal"))
       test.dispatcher.accept(work_item_id: other.fetch("id"))
 
       report = test.dispatcher.pass(limit: 1)

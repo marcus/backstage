@@ -1,0 +1,6 @@
+kind: td
+identity: widgets-tasks
+workspace: /projects/widgets
+targets: [widgets]
+default_target: widgets
+operations: [record_result, request_review]

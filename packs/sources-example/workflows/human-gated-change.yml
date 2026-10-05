@@ -1,0 +1,61 @@
+name: human-gated-change
+version: 1
+description: A working agent prepares a change and a human authorizes completion. No reviewer participates.
+initial_state: ready
+
+states:
+  ready:
+    description: Work is eligible to begin or continue.
+  running:
+    description: An agent is preparing the change.
+  awaiting_approval:
+    description: A candidate waits for a human to approve or decline it.
+    awaits_decision: true
+  completed:
+    description: A human approved the recorded candidate.
+    terminal: true
+  declined:
+    description: A human declined the recorded candidate.
+    terminal: true
+  cancelled:
+    description: The operator stopped the assignment.
+    terminal: true
+
+transitions:
+  start:
+    from: [ready]
+    to: running
+    actors: [system, human]
+    dispatch:
+      phase: implementation
+      on_success: request_approval
+      on_failure: execution_failed
+  report_progress:
+    from: [running]
+    to: running
+    actors: [agent, system]
+  request_approval:
+    description: Ask a human to approve the prepared candidate.
+    from: [running]
+    to: awaiting_approval
+    actors: [agent, system]
+    requires: [change_candidate]
+    decision:
+      question: A candidate change is prepared. Approve it as complete, or decline it?
+      choices: [approve, decline, cancel]
+  approve:
+    from: [awaiting_approval]
+    to: completed
+    actors: [human]
+  decline:
+    from: [awaiting_approval]
+    to: declined
+    actors: [human]
+  execution_failed:
+    from: [running]
+    to: ready
+    actors: [system]
+  cancel:
+    from: [ready, running, awaiting_approval]
+    to: cancelled
+    actors: [human]

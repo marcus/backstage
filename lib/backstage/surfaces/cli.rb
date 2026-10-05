@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "optparse"
 
 module Backstage::Surfaces
@@ -11,7 +12,7 @@ module Backstage::Surfaces
     DeploymentPack = Backstage::Configuration::DeploymentPack
     Interrupts = Backstage::Support::Interrupts
     USAGE = {
-      "submit" => "backstage submit (--title TITLE | --td-issue ID) [--target NAME] [--workflow NAME] [--json|--jsonl]",
+      "submit" => "backstage submit --title TITLE (--description TEXT | --input-file PATH) [--media-type TYPE] [--target NAME] [--workflow NAME] [--json|--jsonl]",
       "list" => "backstage list [--json|--jsonl]",
       "show" => "backstage show WORK_ID [--json|--jsonl]",
       "cancel" => "backstage cancel RUN_ID [--json|--jsonl]",
@@ -28,8 +29,9 @@ module Backstage::Surfaces
       "activity" => "backstage activity list [--after CURSOR] [--limit N] [--work ID] [--run ID] [--target ID] [--kind TYPE]... [--related ID] [--json|--jsonl] | " \
                     "activity show EVENT_ID [--json|--jsonl] | " \
                     "activity follow [--after CURSOR] [--limit N] [--interval SECONDS] [--max-passes N] [--work ID] [--run ID] [--target ID] [--kind TYPE]... [--related ID] [--json|--jsonl]",
-      "td" => "backstage td poll [--pack PATH] [--target NAME] [--json|--jsonl]",
-      "process" => "backstage process WORK_ID [--pack PATH] [--start NAME] [--publish-draft] [--writeback] [--json|--jsonl]",
+      "source" => "backstage source list | source submit CONNECTION REF [--target NAME] | source poll CONNECTION [--target NAME] | source refresh WORK_ID [--json|--jsonl]",
+      "deliver" => "backstage deliver WORK_ID --operation OP [--operation OP] | deliver show ACTION_ID | deliver resolve ACTION_ID (--applied|--not-applied) --reason TEXT [--json|--jsonl]",
+      "process" => "backstage process WORK_ID [--pack PATH] [--start NAME] [--publish-draft] [--deliver OP] [--json|--jsonl]",
       "version" => "backstage version [--json|--jsonl]",
       "help" => "backstage help [--json|--jsonl]"
     }.freeze
@@ -108,7 +110,8 @@ module Backstage::Surfaces
       when "decide" then decide_command(system)
       when "history" then system.workflows.history(required_argument("WORK_ID"))
       when "recover" then system.recovery.reconcile(@argv.shift)
-      when "td" then td_command(system)
+      when "source" then source_command(system)
+      when "deliver" then delivery_command(system)
       when "dispatch" then dispatch_command(system)
       when "process" then process_command(system)
       when "help" then help_payload(global)
@@ -117,42 +120,34 @@ module Backstage::Surfaces
     end
 
     def submit(system)
-      engine = system.engine
-      options = { source: "manual", pack: @active_pack }
-      parser = OptionParser.new do |opts|
+      options = { pack: @active_pack }
+      OptionParser.new do |opts|
         opts.on("--title TITLE") { |value| options[:title] = value }
         opts.on("--description TEXT") { |value| options[:description] = value }
+        opts.on("--input-file PATH") { |value| options[:input_file] = value }
+        opts.on("--media-type TYPE") { |value| options[:media_type] = value }
         opts.on("--idempotency-key KEY") { |value| options[:idempotency_key] = value }
-        opts.on("--source NAME") { |value| options[:source] = value }
-        opts.on("--source-ref REF") { |value| options[:source_ref] = value }
-        opts.on("--td-issue ID") { |value| options[:td_issue] = value }
-        opts.on("--pack PATH") { |value| options[:pack] = value }
         opts.on("--target NAME") { |value| options[:target] = value }
-        opts.on("--workflow NAME", "Workflow to admit this work with") { |value| options[:workflow] = value }
+        opts.on("--workflow NAME") { |value| options[:workflow] = value }
+      end.parse!(@argv)
+      title = options[:title] || raise(OptionParser::MissingArgument, "--title")
+      if options.key?(:description) == options.key?(:input_file)
+        raise ContractError, "provide exactly one of --description and --input-file"
       end
-      parser.parse!(@argv)
-      return submit_td(system, options) if options[:td_issue]
+      content = options[:input_file] ? read_input(options[:input_file]) : options[:description]
+      input = { "content" => content, "media_type" => options[:media_type] || "text/plain" }
+      config = system.configuration(options[:pack])
+      target = options[:target] || (config.targets.keys.first if config.targets.keys.one?)
+      raise ContractError, "--target is required when a pack has multiple targets" unless target
+      key = options[:idempotency_key] || "manual:v2:#{Digest::SHA256.hexdigest(JSON.generate([target, title, input]))}"
+      workflow = options[:workflow] ? config.workflow(options[:workflow]) : config.workflow_for_target(target)
+      system.engine.submit(idempotency_key: key, title: title, input: input, workflow: workflow, **config.binding_for(target))
+    end
 
-      config = system.configuration(options.fetch(:pack, "packs/example"))
-      title = options.fetch(:title)
-      key = options[:idempotency_key] || "manual:v1:#{title.downcase.gsub(/[^a-z0-9]+/, "-").sub(/^-|-$/, "")}"
-      binding = options[:target] ? config.binding_for(options[:target]) : {}
-      workflow = if options[:workflow]
-                   config.workflow(options[:workflow])
-                 elsif options[:target]
-                   config.workflow_for_target(options[:target])
-                 else
-                   config.workflow(config.default_workflow_name)
-                 end
-      engine.submit(
-        idempotency_key: key,
-        title: title,
-        description: options.fetch(:description, ""),
-        source: options[:source],
-        source_ref: options[:source_ref],
-        workflow: workflow,
-        **binding
-      )
+    def read_input(path)
+      File.read(path, encoding: "UTF-8")
+    rescue SystemCallError => error
+      raise ContractError, "cannot read input document: #{error.message}"
     end
 
     def workflows_command(system)
@@ -218,16 +213,6 @@ module Backstage::Surfaces
       )
     end
 
-    def submit_td(system, options)
-      config = system.configuration(options.fetch(:pack, "packs/example"))
-      target_name = options[:target] || config.targets.keys.one? && config.targets.keys.first
-      raise ContractError, "--target is required when a pack has multiple targets" unless target_name
-      target = config.targets.fetch(target_name)
-      trigger, source = system.td_source(target: target, target_name: target_name, workflow: config.workflow_for_target(target_name))
-      trigger.manual(options.fetch(:td_issue))
-      source.reconcile(options.fetch(:td_issue))
-    end
-
     def required_argument(name)
       @argv.shift || raise(OptionParser::MissingArgument, name)
     end
@@ -245,26 +230,46 @@ module Backstage::Surfaces
       DeploymentPack.new(options[:pack]).check
     end
 
-    def td_command(system)
-      subcommand = required_argument("TD_COMMAND")
-      raise OptionParser::InvalidArgument, "unknown td command #{subcommand.inspect}" unless subcommand == "poll"
-      options = { pack: @active_pack }
-      OptionParser.new do |opts|
-        opts.on("--pack PATH") { |value| options[:pack] = value }
-        opts.on("--target NAME") { |value| options[:target] = value }
-      end.parse!(@argv)
-      config = system.configuration(options[:pack])
-      names = options[:target] ? [options[:target]] : config.targets.keys
-      events = []
-      work_items = []
-      names.each do |name|
-        target = config.targets.fetch(name)
-        trigger, source = system.td_source(target: target, target_name: name, workflow: config.workflow_for_target(name))
-        observed = trigger.poll
-        events.concat(observed)
-        observed.select { |event| event["kind"] == "authorized" }.each { |event| work_items << source.reconcile(event["source_ref"]) }
+    def source_command(system)
+      command = required_argument("SOURCE_COMMAND")
+      config = system.configuration(@active_pack)
+      admission = system.source_admission(configuration: config)
+      case command
+      when "list"
+        config.sources.map do |name, source|
+          source.slice("kind", "identity", "targets", "default_target", "operations").merge("connection" => name,
+            "capabilities" => system.source_adapter(config, name).capabilities)
+        end
+      when "submit", "poll"
+        connection = required_argument("CONNECTION")
+        ref = required_argument("REF") if command == "submit"
+        options = {}
+        OptionParser.new { |opts| opts.on("--target NAME") { |value| options[:target] = value } }.parse!(@argv)
+        command == "submit" ? admission.submit(connection: connection, ref: ref, target: options[:target]) :
+          admission.poll(connection: connection, target: options[:target])
+      when "refresh" then admission.refresh(required_argument("WORK_ID"))
+      else raise OptionParser::InvalidArgument, "unknown source command #{command.inspect}"
       end
-      { "triggers" => events, "work_items" => work_items }
+    end
+
+    def delivery_command(system)
+      reference = required_argument("WORK_ID or DELIVERY_COMMAND")
+      delivery = system.result_delivery(configuration: system.configuration(@active_pack))
+      return delivery.describe(required_argument("ACTION_ID")) if reference == "show"
+      if reference == "resolve"
+        action = required_argument("ACTION_ID")
+        options = {}
+        OptionParser.new do |opts|
+          opts.on("--applied") { raise ContractError, "choose one resolution" if options.key?(:applied); options[:applied] = true }
+          opts.on("--not-applied") { raise ContractError, "choose one resolution" if options.key?(:applied); options[:applied] = false }
+          opts.on("--reason TEXT") { |value| options[:reason] = value }
+        end.parse!(@argv)
+        raise OptionParser::MissingArgument, "--applied or --not-applied" unless options.key?(:applied)
+        return delivery.resolve(action, applied: options[:applied], reason: options[:reason] || raise(OptionParser::MissingArgument, "--reason"))
+      end
+      operations = []
+      OptionParser.new { |opts| opts.on("--operation OP") { |value| operations << value } }.parse!(@argv)
+      delivery.deliver(work_item_id: reference, operations: operations)
     end
 
     # The activity projection's operator surface: `list`/`show` are one-shot reads, `follow` is a
@@ -495,13 +500,12 @@ module Backstage::Surfaces
     end
 
     def process_command(system)
-      engine = system.engine
       work_id = required_argument("WORK_ID")
-      options = { pack: @active_pack, fake: true }
+      options = { pack: @active_pack, fake: true, deliver: [] }
       OptionParser.new do |opts|
         opts.on("--pack PATH") { |value| options[:pack] = value }
         opts.on("--publish-draft", "Run paid/container/GitHub path") { options[:fake] = false }
-        opts.on("--writeback", "Post td handoff and request review after approval") { options[:writeback] = true }
+        opts.on("--deliver OP", "Deliver a configured source operation after approval; repeatable") { |value| options[:deliver] << value }
         opts.on("--start NAME", "Transition that starts work when the state offers several") { |value| options[:start] = value }
       end.parse!(@argv)
       config = system.configuration(options[:pack])
@@ -510,17 +514,8 @@ module Backstage::Surfaces
       system.dispatcher(configuration: config).guard_direct_processing!(work_id)
       runtime = options[:fake] ? nil : system.publish_runtime
       result = system.controller(configuration: config, runtime: runtime).process(work_item_id: work_id, start_transition: options[:start])
-      return result unless options[:writeback]
-      raise AuthorityError, "td writeback requires recorded authority for the completion" unless result["handoff_allowed"]
-
-      target_name = engine.show_work(work_id).fetch("target")
-      target = config.targets.fetch(target_name)
-      _trigger, source = system.td_source(target: target, target_name: target_name, workflow: config.workflow_for_target(target_name))
-      work = engine.show_work(work_id)
-      handoff = result.fetch("handoff")
-      source.post_handoff(work_item: work, done: handoff.fetch("done"), remaining: handoff.fetch("remaining"), decisions: handoff.fetch("decisions"))
-      source.request_review(work_item: work, reason: "Backstage implementation and independent review complete")
-      result.merge("writeback" => { "handoff" => true, "review_requested" => true })
+      return result if options[:deliver].empty?
+      result.merge("delivery" => system.result_delivery(configuration: config).deliver(work_item_id: work_id, operations: options[:deliver]))
     end
 
     def extract_format!(global)

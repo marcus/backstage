@@ -70,6 +70,8 @@ module Backstage::Application
       raise ContractError, "unknown execution mode #{mode.inspect}" unless MODES.include?(mode)
 
       work = store.fetch("work_items", work_item_id) || raise(NotFound, "work_items #{work_item_id} was not found")
+      raise ConflictError, "work item was refreshed as #{work.fetch("refreshed_to")}" if work["refreshed_to"]
+      raise ConflictError, "work item has active source delivery" if work["source_delivery_owner"]
       # Without an explicit identity, a repeat of the same command deduplicates onto the acceptance
       # it already made, while asking for a new generation — after a cancellation, an exhaustion, or
       # with supersede — mints a new one. Getting this wrong makes the documented recovery command a
@@ -120,6 +122,7 @@ module Backstage::Application
                         "intent_id" => id, "generation" => intent.fetch("generation"), "updated_at" => now }]
       ]
       expect = [
+        { collection: "work_items", id: work_item_id, fields: { refreshed_to: nil, source_delivery_owner: nil } },
         { collection: COLLECTION, id: id, revision: nil },
         # Whichever concurrent acceptance commits first owns the pointer; the other one conflicts
         # rather than producing a second active intent for the same work.

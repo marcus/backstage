@@ -2,17 +2,20 @@
 
 How a Backstage instance is configured. This document is the configuration model: the layers a pack uses and the file shapes `config check` compiles.
 
-## Three layers
+## Configuration and execution inputs
 
-1. **Deployment pack** — one per environment. Selects adapters and their settings: state store, artifact directory, worker image, harness, credential broker, model defaults, plus role instructions, skills, and the work lifecycles the instance offers. A pack is a directory.
-2. **Target** — one per repository the instance works on. Owns the repo remote and revision rules, which trigger source routes to it, its authority grants, harness overrides, target-specific instructions, its context grants, and which workflow its sourced work is admitted with. One instance serves many targets.
-3. **Job bundle** — compiled per run: pack defaults ← target overrides ← the specific work item, validated against the versioned bundle schema. The compiled bundle is persisted as a run artifact, so the audit trail answers "what was this agent given" per run, not per config version.
+1. **Deployment pack** — selects adapters, state and artifact paths, worker image, harness, credential references, instructions, and available workflows. A pack is a directory.
+2. **Target** — defines one repository's remote, revision rules, authority, instructions, context grants, and optional workflow override. A target does not name a tracker or own a source connection.
+3. **Source connection** — optionally defines a native adapter, stable identity, adapter settings, allowed targets, default target, and permitted operations. Manual-only packs have no sources.
+4. **Job bundle** — compiles pack defaults, target overrides, and the admitted assignment for each run. The stored bundle records the native input and execution settings the agent received.
 
-Routing binds triggers to targets: a trigger event carries its source identity (for `td`, the workspace/repo it came from), and each target declares which sources it claims. A work item routed to a target executes with that target's bundle inputs; targets that grant nothing extra add nothing.
+Source content stays opaque. Admission stores `input.content`, `input.media_type`, and a core-computed `input.sha256`, plus an optional source envelope: configured `connection`, `kind`, `identity`, native `ref`, and optional `version`. A title labels the assignment for display. Backstage does not normalize descriptions, tracker states, priorities, or acceptance criteria into a canonical task model.
+
+Explicit CLI routing or a source's configured default chooses a permitted target. Task prose cannot change that choice. Workflow definition and target routing are bound at admission; an existing work item is never retargeted by resubmission or a later pack edit.
 
 ## File shapes
 
-Packs are directories of hand-editable YAML, validated by `backstage config check`, compiled to JSON at bundle time. The committed example lives at `packs/example/` in this repository. Another deployment keeps its pack in its own directory and passes that path to `--pack`. Packs are the deployment boundary and are not shared across environments.
+Packs are directories of hand-editable YAML, validated by `backstage config check`, compiled to JSON at bundle time. The source-free manual example lives at `packs/example/`; `packs/sources-example/` adds td and fake connections. Another deployment keeps its pack in its own directory and passes that path to `--pack`. Packs are the deployment boundary and are not shared across environments.
 
 ```yaml
 # packs/example/backstage.yml — the deployment pack entry
@@ -44,9 +47,6 @@ repo:
   origin: https://github.com/example/widgets.git
   default_revision: main
   credentials: github
-trigger:
-  td_workspace: /projects/widgets
-  source_instance: widgets-example
 authority:
   review_change: draft_pr
 context:
@@ -58,11 +58,40 @@ instructions: instructions/widgets.md
 ```yaml
 # a second target that waits for a person instead of a reviewer
 repo:    { origin: https://github.com/example/notes.git, credentials: github }
-trigger: { td_workspace: /projects/notes, source_instance: notes-example }
 authority: { review_change: draft_pr }
 workflow: human-gated-change
 # no context block — this agent gets only its own clone
 ```
+
+## Source connections
+
+Each `sources/NAME.yml` file defines a connection. The filename is the CLI connection name; `identity` is its stable source namespace. Native references retain their adapter-defined case and syntax and are not interpreted as paths by the core.
+
+```yaml
+# sources/tasks.yml — td settings remain in the td connection
+kind: td
+identity: widgets-tasks
+targets: [widgets]
+default_target: widgets
+operations: [record_result, request_review]
+workspace: /projects/widgets
+```
+
+```yaml
+# sources/native.yml — a deliberately different local fixture source
+kind: fake
+identity: native-jobs
+targets: [widgets]
+default_target: widgets
+operations: [record_result, mark_ready]
+path: fixtures/native-jobs.json
+```
+
+`targets` restricts admission routing. `default_target` must be among those targets. `operations` permits a subset of capabilities actually implemented by the adapter; configuration cannot create a capability. td supports `record_result` and `request_review`; fake supports `record_result` and `mark_ready`. The composition root recognizes only `td` and `fake`; another source requires adapter code and wiring. See [work sources](work-sources.md) for the extension contract.
+
+Source discovery and explicit import only admit work. Queue acceptance and source delivery remain separate commands. Changing a source document never changes the frozen input of admitted work. Explicit refresh creates a new assignment without inheriting execution acceptance.
+
+The new source/input contracts intentionally replace earlier td-shaped packs and records. Preserve old state for inspection and use fresh explicit state/artifact paths when reimporting into the new format; no automatic data migration or deletion runs.
 
 ## Dispatcher policy
 
@@ -186,6 +215,6 @@ publisher; it is not a permanent product prohibition on operational actions. A f
 an implemented executor and approval path, not just an added allowlist entry.
 
 - Config files carry credential **references**; the credential broker resolves them at run time. Secrets never appear in packs, bundles-as-stored, state, or artifacts.
-- The bundle schema is versioned JSON Schema; additive fields are the expected evolution path (context grants arrived this way).
-- `backstage config check` validates a pack, its targets, and its workflows non-interactively and exits non-zero on any error, so config is CI-checkable.
+- The bundle schema is versioned JSON Schema. Native input and provenance are separate from execution, workflow, and repository authority.
+- `backstage config check` validates a pack, its targets, source connections, and workflows non-interactively and exits non-zero on any error, so config is CI-checkable.
 - Workflow definitions are compiled to immutable records and bound to work by digest. Changing a definition is a new digest, never a reinterpretation of work already admitted.

@@ -12,7 +12,7 @@ module Backstage::Application
     ContractError = Backstage::ContractError
     Records = Backstage::Domain::Records
     Outcome = Backstage::Domain::Outcome
-    COLLECTIONS = %w[work_items workflow_snapshots work_transitions decisions agent_requests jobs runs attempts artifacts external_actions triggers source_checks execution_intents execution_acceptances runtime_streams].freeze
+    COLLECTIONS = %w[work_items workflow_snapshots work_transitions decisions agent_requests jobs runs attempts artifacts external_actions source_checks execution_intents execution_acceptances runtime_streams].freeze
 
     attr_reader :store, :artifact_store, :capture_options
 
@@ -32,52 +32,71 @@ module Backstage::Application
       @capture_options = symbolize(capture_options)
     end
 
-    def submit(idempotency_key:, title:, description:, workflow:, source: "manual", source_ref: nil, target: nil, source_instance: nil, source_identity: nil)
-      existing = store.find("work_items", idempotency_key: idempotency_key)
-      if existing
-        requested_binding = { "target" => target, "source_instance" => source_instance, "source_identity" => source_identity }.compact
-        unless requested_binding.all? { |key, value| existing[key] == value }
-          raise ContractError, "work item routing binding is immutable"
+    INPUT_BYTE_LIMIT = 1024 * 1024
+
+    # Native task content is a document, not a normalized tracker record. Its digest is computed
+    # here; caller-supplied digests and task prose never select routing or authority.
+    def submit(idempotency_key:, title:, input:, workflow:, target:, source: nil, predecessor: nil)
+      raise ContractError, "idempotency key is required" unless idempotency_key.is_a?(String) && !idempotency_key.empty?
+      raise ContractError, "title must be a string" unless title.is_a?(String)
+      raise ContractError, "target is required" unless target.is_a?(String) && !target.empty?
+
+      input = normalize_input(input)
+      source = normalize_source(source)
+      work = Records.work_item(idempotency_key: idempotency_key, title: title, input: input,
+                               workflow: workflow, target: target, source: source)
+      existing = store.fetch("work_items", work.fetch("id"))
+      return existing_admission(existing, work) if existing
+
+      writes = [["workflow_snapshots", workflow.snapshot_record], ["work_items", work]]
+      expect = [{ collection: "work_items", id: work.fetch("id"), revision: nil }]
+      if predecessor
+        previous = store.fetch!("work_items", predecessor)
+        raise ConflictError, "work was already refreshed" if previous["refreshed_to"]
+        raise ConflictError, "cannot refresh during source delivery" if previous["source_delivery_owner"]
+        raise ConflictError, "cannot refresh work with active execution" if active_execution?(predecessor)
+        intents = store.list("execution_intents").select { |row| row["work_item_id"] == predecessor }
+        unless intents.all? { |row| %w[completed cancelled exhausted].include?(row["status"]) }
+          raise ConflictError, "cannot refresh work with an active execution intent"
         end
-
-        return existing
+        jobs = store.list("jobs").select { |row| row["work_item_id"] == predecessor }
+        raise ConflictError, "cannot refresh work with active execution" if jobs.any? { |row| row["status"] == "running" }
+        jobs.each do |row|
+          expect << { collection: "jobs", id: row.fetch("id"), fields: row.slice("status", "run_id") }
+        end
+        pointer = store.fetch("execution_acceptances", predecessor)
+        expect << if pointer
+          { collection: "execution_acceptances", id: predecessor, fields: { intent_id: pointer.fetch("intent_id") } }
+        else
+          { collection: "execution_acceptances", id: predecessor, revision: nil }
+        end
+        intents.each { |row| expect << { collection: "execution_intents", id: row.fetch("id"), revision: row.fetch("revision") } }
+        expect << { collection: "work_items", id: predecessor, revision: previous.fetch("revision"), fields: { refreshed_to: nil, source_delivery_owner: nil } }
+        writes << ["work_items", previous.merge("refreshed_to" => work.fetch("id"), "updated_at" => Records.timestamp)]
+        work["refresh_of"] = predecessor
       end
-
-      work = Records.work_item(
-        idempotency_key: idempotency_key,
-        title: title,
-        description: description,
-        source: source,
-        source_ref: source_ref,
-        workflow: workflow,
-        target: target,
-        source_instance: source_instance,
-        source_identity: source_identity
-      )
-      # The snapshot and the work item were two saves; they are one commit now so the admission and
-      # the event that records it cannot be observed apart. Summary and payload carry ids and
-      # states only — the title and description are source text and stay in the record.
       admitted = recorder.event(
         type: "work.admitted",
         event_id: ActivityRecorder.event_id("work.admitted", idempotency_key),
-        work_item_id: work.fetch("id"),
-        target_id: target,
-        occurred_at: work["created_at"],
+        work_item_id: work.fetch("id"), target_id: target, occurred_at: work["created_at"],
         summary: "admitted #{work.fetch("id")} into #{workflow.name} at #{work.fetch("state")}",
         data: {
-          "state" => work.fetch("state"),
-          "workflow" => workflow.name,
+          "state" => work.fetch("state"), "workflow" => workflow.name,
           "workflow_digest" => work.dig("workflow", "digest"),
-          "source" => source,
-          "source_instance" => source_instance,
-          # The digest, not the key: an idempotency key is built from the source ref and the
-          # slugified title, so recording it verbatim puts source text in history that the record
-          # already holds. The digest still answers "is this the same admission?" for a reader
-          # holding the key, and answers nothing to a reader who is not.
-          "idempotency_key_digest" => Digest::SHA256.hexdigest(idempotency_key.to_s)
-        }
+          "source_connection" => source && source["connection"],
+          "input_sha256" => input.fetch("sha256"),
+          "idempotency_key_digest" => Digest::SHA256.hexdigest(idempotency_key)
+        }.compact
       )
-      store.commit([["workflow_snapshots", workflow.snapshot_record], ["work_items", work]], activity: [admitted]).last
+      store.commit(writes, expect: expect, activity: [admitted])
+      work
+    rescue ActivityConflictError
+      raise
+    rescue ConflictError
+      existing = work && store.fetch("work_items", work.fetch("id"))
+      raise unless existing
+
+      existing_admission(existing, work)
     end
 
     def list_work
@@ -123,6 +142,8 @@ module Backstage::Application
       # observes it already claimed; it must never launch a second worker for the same job.
       work = store.fetch!("work_items", work_item_id)
       workflows = workflow_service
+      raise ConflictError, "work item has been refreshed" if work["refreshed_to"]
+      raise ConflictError, "work item has active source delivery" if work["source_delivery_owner"]
       stale = workflows.superseded_dispatch?(work_item_id, job)
       raise ConflictError, stale if stale
       raise ConflictError, "dispatch state has changed" unless job["dispatch_state"] == work.fetch("state")
@@ -136,7 +157,7 @@ module Backstage::Application
       attempt = Records.attempt(run_id: run.fetch("id"), number: 1)
       job = job.merge("status" => "running", "run_id" => run.fetch("id"), "bundle" => bundle, "updated_at" => Records.timestamp).compact
       store.commit([["jobs", job], ["runs", run], ["attempts", attempt]], expect: [
-        { collection: "work_items", id: work_item_id, revision: work.fetch("revision") },
+        { collection: "work_items", id: work_item_id, revision: work.fetch("revision"), fields: { refreshed_to: nil, source_delivery_owner: nil } },
         { collection: "jobs", id: job.fetch("id"), fields: { status: "queued", run_id: nil } }
       ], activity: [started_event(work, job, run, attempt, runner)])
       claimed = true
@@ -252,6 +273,51 @@ module Backstage::Application
     end
 
     private
+
+    def normalize_input(input)
+      raise ContractError, "input must be an object" unless input.is_a?(Hash)
+
+      input = input.transform_keys(&:to_s)
+      raise ContractError, "unknown input fields" unless (input.keys - %w[content media_type]).empty?
+      content = input["content"]
+      media_type = input["media_type"]
+      unless content.is_a?(String) && content.dup.force_encoding(Encoding::UTF_8).valid_encoding?
+        raise ContractError, "input content must be a UTF-8 string"
+      end
+      raise ContractError, "input exceeds #{INPUT_BYTE_LIMIT} bytes" if content.bytesize > INPUT_BYTE_LIMIT
+      unless media_type.is_a?(String) && media_type.match?(%r{\A[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+(?:;[^\r\n]+)?\z})
+        raise ContractError, "input media_type must be a media type"
+      end
+      normalized = { "content" => content.dup.force_encoding(Encoding::UTF_8), "media_type" => media_type.dup,
+                     "sha256" => Digest::SHA256.hexdigest(content) }
+      @secret_guard.check!(normalized)
+      normalized
+    end
+
+    def normalize_source(source)
+      return nil if source.nil?
+      raise ContractError, "source provenance must be an object" unless source.is_a?(Hash)
+
+      source = source.transform_keys(&:to_s)
+      raise ContractError, "unknown source provenance fields" unless (source.keys - %w[connection kind identity ref version]).empty?
+      %w[connection kind identity ref].each do |key|
+        raise ContractError, "source #{key} is required" unless source[key].is_a?(String) && !source[key].empty?
+      end
+      if source.key?("version") && !source["version"].is_a?(String)
+        raise ContractError, "source version must be an opaque string"
+      end
+      @secret_guard.check!(source)
+      source.transform_values(&:dup)
+    end
+
+    def existing_admission(existing, requested)
+      unless %w[target workflow].all? { |key| existing[key] == requested[key] } &&
+             existing["source"]&.reject { |key, _| key == "version" } == requested["source"]&.reject { |key, _| key == "version" }
+        raise ContractError, "work item routing and workflow bindings are immutable"
+      end
+
+      existing
+    end
 
     def recorder
       @recorder ||= ActivityRecorder.new(store: store, adapter: "backstage.application.engine")

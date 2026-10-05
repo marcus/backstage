@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "digest"
 require "socket"
 require "time"
 
@@ -25,25 +26,22 @@ module Backstage::Domain
     # A work item owns its position in a configured workflow: `state`, an integer `revision`
     # bumped by every transition, and the immutable `workflow` binding it was admitted with.
     # Jobs, runs, and attempts carry `status` and describe execution only.
-    def work_item(idempotency_key:, title:, description:, source:, source_ref:, workflow:, target: nil, source_instance: nil, source_identity: nil)
+    def work_item(idempotency_key:, title:, input:, workflow:, target:, source: nil)
       now = timestamp
       {
-        "schema_version" => 1,
-        "id" => id("work"),
+        "schema_version" => 2,
+        "id" => "work-#{Digest::SHA256.hexdigest(idempotency_key)}",
         "idempotency_key" => idempotency_key,
         "title" => title,
-        "description" => description,
+        "input" => input,
         "source" => source,
-        "source_ref" => source_ref,
         "workflow" => workflow.binding,
         "state" => workflow.initial_state,
         "revision" => 0,
         "revisions_used" => 0,
         "created_at" => now,
         "updated_at" => now,
-        "target" => target,
-        "source_instance" => source_instance,
-        "source_identity" => source_identity
+        "target" => target
       }.compact
     end
 

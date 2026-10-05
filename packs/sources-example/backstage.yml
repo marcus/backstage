@@ -1,0 +1,32 @@
+adapters:
+  state_store: { kind: jsonl, path: ~/.backstage/state.jsonl }
+  artifact_store: { kind: local, path: ~/.backstage/artifacts }
+  worker_runtime: { kind: docker, image: backstage-worker:0.1.0 }
+  harness: { kind: pi }
+harness_defaults:
+  provider: openrouter
+  model: z-ai/glm-5.3-flash
+  credentials: openrouter
+credentials:
+  repository_default: github
+  broker:
+    github:
+      source_env: GITHUB_TOKEN
+      runtime_env: GH_TOKEN
+    openrouter:
+      source_env: OPENROUTER_API_KEY
+      runtime_env: OPENROUTER_API_KEY
+workflows:
+  default: independent-review
+dispatcher:
+  poll_interval_seconds: 5
+  retry:
+    max_retries: 0
+    delay_seconds: 60
+    backoff: fixed
+    max_delay_seconds: 3600
+policy:
+  name: implementation-independent-review-v1
+  review_change: draft_pr
+  require_independent_review: true
+timeout_seconds: 1800

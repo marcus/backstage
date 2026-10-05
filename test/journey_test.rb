@@ -70,38 +70,13 @@ class JourneyTest < Minitest::Test
     end
   end
 
-  class FakeTdClient
-    attr_reader :handoff_calls, :review_calls
-
-    def initialize
-      @issue = { "id" => "td-retry", "status" => "open", "review_history" => [] }
-      @handoff_calls = []
-      @review_calls = []
-    end
-
-    def workspace = "/tmp/tasks"
-    def show(_) = @issue
-
-    def handoff(_id, **payload)
-      @handoff_calls << payload
-      @issue = @issue.merge("handoff" => { "done" => payload[:done], "remaining" => payload[:remaining], "decisions" => payload[:decisions] })
-      { "action" => "handoff_recorded" }
-    end
-
-    def review(_id, reason:)
-      @review_calls << reason
-      @issue = @issue.merge("status" => "in_review")
-      { "action" => "review_requested", "status" => "in_review" }
-    end
-  end
-
   def test_fake_real_cli_journey_compiles_runs_reviews_and_persists_artifacts
     in_tmpdir do |directory|
       state = File.join(directory, "state.jsonl")
       artifacts = File.join(directory, "artifacts")
       submit_out = StringIO.new
       submit = Backstage::CLI.new(
-        ["--state", state, "--artifacts", artifacts, "--json", "submit", "--pack", File.expand_path("../packs/example", __dir__), "--target", "widgets", "--title", "Steel thread", "--description", "Prove the journey", "--source", "td", "--source-ref", "td-proof", "--idempotency-key", "work:v1:td:widgets-example:td-proof"],
+        ["--state", state, "--artifacts", artifacts, "--json", "submit", "--pack", File.expand_path("../packs/example", __dir__), "--target", "widgets", "--title", "Steel thread", "--description", "Prove the journey", "--idempotency-key", "work:v1:td:widgets-example:td-proof"],
         out: submit_out, err: StringIO.new, env: {}
       )
       assert_equal 0, submit.call
@@ -116,7 +91,7 @@ class JourneyTest < Minitest::Test
       result = JSON.parse(process_out.string)
 
       assert_equal "fake", result["mode"]
-      assert_equal true, result["handoff_allowed"]
+      assert_equal true, result["delivery_allowed"]
       assert_equal "approved", result["verdict"]
       assert_equal "completed", result["state"]
       store = Backstage::JsonlStore.new(state)
@@ -144,7 +119,7 @@ class JourneyTest < Minitest::Test
     in_tmpdir do |directory|
       engine = build_engine(directory)
       config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
-      work = submit_work(engine, key: "retry-published", title: "Retry", source: "td", source_ref: { "issue_id" => "td-retry", "source_instance" => "widgets-example" }, **config.binding_for("widgets"))
+      work = submit_work(engine, key: "retry-published", title: "Retry", **config.binding_for("widgets"))
       broker = example_broker( { "GITHUB_TOKEN" => "secret", "OPENROUTER_API_KEY" => "model-secret" })
       system = Backstage::Bootstrap::System.new(
         engine: engine,
@@ -161,7 +136,7 @@ class JourneyTest < Minitest::Test
         system.controller(configuration: config, runtime: runtime, workspace_root: File.join(directory, "workspaces")).process(work_item_id: work["id"])
       end
 
-      assert_equal true, result["handoff_allowed"]
+      assert_equal true, result["delivery_allowed"]
       assert_equal "completed", engine.show_work(work["id"])["state"]
       assert_equal 1, engine.show_work(work["id"])["revisions_used"], "the revision continued the same assignment"
       steps = result.fetch("steps").filter_map { |step| step.dig("transition", "transition") }
@@ -179,15 +154,7 @@ class JourneyTest < Minitest::Test
       assert_equal 2, engine.store.list("artifacts").count { |artifact| artifact["kind"] == "binary_patch" }
       assert_equal 2, engine.store.list("runs").count { |run| run["phase"] == "review" }
 
-      td_client = FakeTdClient.new
-      td_source = Backstage::TdWorkSource.new(client: td_client, store: engine.store, engine: engine, source_instance: "widgets-example", target_name: "tasks", workflow: workflow("independent-review"))
-      handoff = result.fetch("handoff")
-      2.times do
-        td_source.post_handoff(work_item: engine.show_work(work["id"]), done: handoff.fetch("done"), remaining: handoff.fetch("remaining"), decisions: handoff.fetch("decisions"))
-        td_source.request_review(work_item: engine.show_work(work["id"]), reason: "ready")
-      end
-      assert_equal 1, td_client.handoff_calls.length
-      assert_equal 1, td_client.review_calls.length
+
     end
   end
 

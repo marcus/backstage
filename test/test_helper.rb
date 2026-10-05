@@ -49,7 +49,8 @@ module BackstageTestHelpers
     engine.submit(
       idempotency_key: key,
       title: overrides.delete(:title) || "Test work",
-      description: overrides.delete(:description) || "",
+      input: overrides.delete(:input) || { content: overrides.delete(:description) || "", media_type: "text/plain" },
+      target: overrides.delete(:target) || "widgets",
       workflow: workflow(workflow_name),
       **overrides
     )

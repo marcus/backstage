@@ -19,8 +19,8 @@ specification {
 }
 model {
   intake = subsystem 'Intake' {
-    description 'Authorized work enters through the CLI or td polling.'
-    metadata { uid 'intake' fractalColor '#759EB5' evidence 'README.md#agent-facing-cli' }
+    description 'Native assignments enter through manual submission or configured source adapters; admission does not accept execution.'
+    metadata { uid 'intake' fractalColor '#759EB5' evidence 'README.md#how-work-moves' }
     cli = adapter 'Manual CLI' {
       description 'Submit and inspect work through a noninteractive command surface.'
       metadata { uid 'intake.cli' fractalColor '#759EB5' evidence ['lib/backstage/surfaces/cli.rb', 'test/cli_test.rb', 'test/dispatch_cli_test.rb'] }
@@ -29,20 +29,24 @@ model {
         metadata { uid 'intake.cli.commands' fractalColor '#759EB5' evidence ['lib/backstage/surfaces/cli.rb', 'test/cli_test.rb'] }
       }
     }
-    td = adapter 'td polling' {
-      description 'Observe configured issue sources and reconcile repeated observations.'
-      metadata { uid 'intake.td' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/trigger.rb', 'lib/backstage/adapters/td/work_source.rb', 'test/td_adapters_test.rb'] }
-      trigger = component 'Authorized trigger' {
-        description 'Poll only eligible td issues and record a changed source receipt without growing history for unchanged checks.'
-        technology 'Adapters::Td::Trigger'
-        metadata { uid 'intake.td.trigger' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/trigger.rb', 'test/td_adapters_test.rb'] }
+    td = adapter 'td source' {
+      description 'Own td issue selection, native snapshots, handoff formatting and review-request operations.'
+      metadata { uid 'intake.td' fractalColor '#759EB5' evidence ['lib/backstage/ports/work_source.rb', 'lib/backstage/adapters/td/source.rb'] }
+      trigger = component 'Native discovery' {
+        description 'Return eligible open agent-ready references again so failed admission can retry; source status never grants execution authority.'
+        technology 'WorkSource#discover'
+        metadata { uid 'intake.td.trigger' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/source.rb', 'lib/backstage/application/source_admission.rb'] }
       }
-      source = component 'Work source reconciliation' {
-        description 'Turn an authorized issue into idempotent Backstage work and own its later td review and handoff writes.'
-        technology 'Adapters::Td::WorkSource'
-        metadata { uid 'intake.td.source' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/work_source.rb', 'test/td_adapters_test.rb'] }
+      source = component 'Native snapshot & operations' {
+        description 'Return an opaque native issue document and implement record_result and request_review under host-side delivery control.'
+        technology 'Adapters::Td::Source'
+        metadata { uid 'intake.td.source' fractalColor '#759EB5' evidence ['lib/backstage/adapters/td/source.rb', 'test/td_adapters_test.rb'] }
       }
-      trigger .sends source 'Authorized issue' { metadata { uid 'td-trigger-reconcile' } }
+      trigger .sends source 'Discovered reference' { metadata { uid 'td-trigger-reconcile' } }
+    }
+    fake = adapter 'Native fake source' {
+      description 'Read case-sensitive job references and opaque documents from a local fixture; record_result and mark_ready receipts use a separate ledger.'
+      metadata { uid 'intake.fake' fractalColor '#759EB5' evidence ['lib/backstage/adapters/fake/work_source.rb', 'docs/guides/active/work-sources.md'] }
     }
     events = adapter 'Schedules & events' {
       #proposed
@@ -52,7 +56,7 @@ model {
   }
   queue = subsystem 'Work queue' {
     description 'Accepted work survives restarts, human waits and delayed retries.'
-    metadata { uid 'queue' fractalColor '#9A91C4' evidence 'README.md#agent-facing-cli' }
+    metadata { uid 'queue' fractalColor '#9A91C4' evidence 'README.md#how-work-moves' }
     dispatch = component 'Durable dispatcher' {
       description 'Advance explicitly accepted work through bounded, recoverable passes.'
       technology 'Application::Dispatcher'
@@ -66,8 +70,8 @@ model {
         metadata { uid 'queue.dispatch.passes' fractalColor '#739886' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/domain/retry_policy.rb', 'test/dispatcher_test.rb'] }
       }
       effects = component 'Unresolved effect gate' {
-        description 'Refuse a new pass while a prior GitHub or td effect remains unresolved; recovery reports the state but does not decide it away.'
-        metadata { uid 'queue.dispatch.effects' fractalColor '#B59669' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/adapters/github/review_change.rb', 'lib/backstage/adapters/td/work_source.rb', 'test/dispatcher_test.rb'] }
+        description 'Refuse a new pass while a prior external effect remains unresolved; recovery reports the state but does not decide it away.'
+        metadata { uid 'queue.dispatch.effects' fractalColor '#B59669' evidence ['lib/backstage/application/dispatcher.rb', 'lib/backstage/adapters/github/review_change.rb', 'lib/backstage/adapters/td/source.rb', 'test/dispatcher_test.rb'] }
       }
       intents .sends passes 'Claimed work' { metadata { uid 'dispatch-claim-pass' } }
       effects .authorizes passes 'No unresolved effect' { metadata { uid 'dispatch-effect-gate' } }
@@ -85,14 +89,14 @@ model {
   }
   core = subsystem 'Backstage Core' {
     description 'Own lifecycle, policy and the audit trail. Dispatch isolated agents.'
-    metadata { uid 'core' fractalColor '#739886' evidence 'README.md#design-boundaries' }
+    metadata { uid 'core' fractalColor '#739886' evidence 'README.md#adapters-and-configuration' }
     lifecycle = component 'Lifecycle' {
-      description 'Record each transition with a revision guard and durable history.'
+      description 'Freeze native input at admission, then record workflow transitions with revision guards and durable history.'
       metadata { uid 'core.lifecycle' fractalColor '#739886' evidence ['lib/backstage/application/engine.rb', 'lib/backstage/application/workflow_service.rb', 'lib/backstage/domain/workflow.rb'] }
       admission = component 'Work admission' {
-        description 'Create idempotent work records with the compiled workflow and bound execution identity.'
-        technology 'Application::Engine'
-        metadata { uid 'core.lifecycle.admission' fractalColor '#739886' evidence ['lib/backstage/application/engine.rb', 'test/core_test.rb', 'test/durable_restart_test.rb'] }
+        description 'Atomically admit frozen native input and source provenance with target and workflow bindings; explicit changed-source refresh creates unaccepted replacement work.'
+        technology 'Application::Engine + SourceAdmission'
+        metadata { uid 'core.lifecycle.admission' fractalColor '#739886' evidence ['lib/backstage/application/engine.rb', 'lib/backstage/application/source_admission.rb', 'lib/backstage/ports/work_source.rb', 'test/core_test.rb'] }
       }
       transitions = component 'Guarded transitions' {
         description 'Apply only valid workflow changes after checking actor entry, revision, evidence and decision authority.'
@@ -100,6 +104,11 @@ model {
         metadata { uid 'core.lifecycle.transitions' fractalColor '#739886' evidence ['lib/backstage/application/workflow_service.rb', 'lib/backstage/domain/workflow.rb', 'test/workflow_service_test.rb'] }
       }
       admission .sends transitions 'Start and finish work' { metadata { uid 'admission-transitions' } }
+    }
+    delivery = component 'Source result delivery' {
+      description 'Require independent candidate-bound completion, configured capabilities and explicit operations; own immutable payloads, local locking and per-operation reconciliation.'
+      technology 'Application::ResultDelivery'
+      metadata { uid 'core.delivery' fractalColor '#B59669' evidence ['lib/backstage/application/result_delivery.rb', 'lib/backstage/ports/work_source.rb', 'docs/guides/active/work-sources.md'] }
     }
     policy = component 'Authority & policy' {
       description 'Bind actor authority to its entry point and scope each requested effect.'
@@ -229,8 +238,8 @@ model {
     }
   }
   inputs = subsystem 'Job inputs' {
-    description 'Repositories and compiled execution configuration shape each bounded job.'
-    metadata { uid 'inputs' fractalColor '#B59669' evidence 'README.md#design-boundaries' }
+    description 'Repository targets and separate source connections compile each job; native content cannot change routing or operation permissions.'
+    metadata { uid 'inputs' fractalColor '#B59669' evidence 'README.md#adapters-and-configuration' }
     repos = adapter 'Repository context' {
       description 'Carry named, read-only repository grants in the job bundle for the scoped phase runner to materialize.'
       metadata { uid 'inputs.repos' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'lib/backstage/application/runners/container_phase_runner.rb', 'test/container_phase_runner_test.rb'] }
@@ -240,12 +249,12 @@ model {
       technology 'Configuration::DeploymentPack'
       metadata { uid 'inputs.config' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'docs/guides/active/config-model.md', 'test/configuration_test.rb'] }
       validation = component 'Pack validation' {
-        description 'Load safe YAML, reject secrets and incomplete adapters, and validate targets, routes, instructions, workflows and capture limits.'
+        description 'Load safe YAML, reject secrets and incomplete adapters, and validate targets, separate source connections, allowed operations, instructions, workflows and capture limits.'
         metadata { uid 'inputs.config.validation' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'test/configuration_test.rb'] }
       }
       compiler = component 'Job bundle compiler' {
-        description 'Bind admitted work to its target and source, then compile repository, harness, execution, policy and read-only context grants.'
-        metadata { uid 'inputs.config.compiler' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'schemas/job-bundle-v1.json', 'test/configuration_test.rb', 'test/contract_validator_test.rb'] }
+        description 'Compile frozen native input and provenance separately from repository, harness, execution, policy and read-only context grants.'
+        metadata { uid 'inputs.config.compiler' fractalColor '#B59669' evidence ['lib/backstage/configuration/deployment_pack.rb', 'schemas/job-bundle-v2.json', 'test/configuration_test.rb', 'test/contract_validator_test.rb'] }
       }
       validation .sends compiler 'Validated definitions' { metadata { uid 'config-validated-bundle' } }
     }
@@ -262,9 +271,9 @@ model {
       description 'Publish only the authorized branch and draft PR after finalization and capture-coverage checks.'
       metadata { uid 'outputs.drafts' fractalColor '#89A579' }
     }
-    handoff = adapter 'td handoff' {
-      description 'Return artifacts and review evidence through reconciled, ledgered writes.'
-      metadata { uid 'outputs.handoff' fractalColor '#89A579' }
+    handoff = adapter 'Source results' {
+      description 'td handoff and review request, or fake result and ready receipts, after explicit approved delivery.'
+      metadata { uid 'outputs.handoff' fractalColor '#89A579' evidence ['lib/backstage/application/result_delivery.rb', 'docs/guides/active/work-sources.md'] }
     }
     deploy = adapter 'Deploy & repair' {
       #proposed
@@ -273,8 +282,10 @@ model {
     }
   }
   intake.cli.commands .sends queue.dispatch.intents 'Accept work' { metadata { uid 'manual-accept' } }
-  intake.td.source .sends queue.dispatch.intents 'Reconcile work' { metadata { uid 'poll-accept' } }
-  intake.events .sends queue.dispatch 'Submit event' { #proposed metadata { uid 'event-accept' } }
+  intake.td.source .sends core.lifecycle.admission 'Frozen native snapshot' { metadata { uid 'poll-accept' } }
+  intake.fake .sends core.lifecycle.admission 'Frozen native snapshot' { metadata { uid 'fake-source-admission' } }
+  intake.cli.commands .sends core.lifecycle.admission 'Manual native document' { metadata { uid 'manual-native-admission' } }
+  intake.events .sends core.lifecycle.admission 'Submit event' { #proposed metadata { uid 'event-accept' } }
   queue.dispatch.passes .sends core.lifecycle.transitions 'Advance lifecycle' { metadata { uid 'dispatch-lifecycle' } }
   queue.recovery .reads core.artifacts 'Reconcile history' { metadata { uid 'recovery-history' } }
   inputs.config.compiler .sends core.policy 'Compiled policy' { metadata { uid 'config-policy' } }
@@ -286,7 +297,13 @@ model {
   core.policy.repository .authorizes core.publisher 'Revalidate effect' { metadata { uid 'authorize-publish' } }
   core.execution .sends core.publisher 'Finalized candidate' { metadata { uid 'candidate-publish' } }
   core.publisher.protocol .sends outputs.drafts 'Publish draft' { metadata { uid 'publish-draft' } }
-  core.publisher .sends outputs.handoff 'Return evidence' { metadata { uid 'publish-handoff' } }
+  core.delivery .sends outputs.handoff 'Explicit source operation' { metadata { uid 'publish-handoff' } }
+  intake.cli.commands .sends core.delivery 'Deliver or resolve' { metadata { uid 'cli-source-delivery' } }
+  core.delivery .reads core.lifecycle 'Verified independent completion' { metadata { uid 'delivery-completion-authority' } }
+  core.delivery .reads inputs.config 'Permitted connection and operations' { metadata { uid 'delivery-source-config' } }
+  core.delivery .sends intake.td.source 'Prepare, reconcile, execute' { metadata { uid 'delivery-td-adapter' layoutFeedback 'true' } }
+  core.delivery .sends intake.fake 'Prepare, reconcile, execute' { metadata { uid 'delivery-fake-adapter' layoutFeedback 'true' } }
+  core.delivery .records core.artifacts.records 'Immutable operation and receipt' { metadata { uid 'delivery-operational-record' } }
   core.policy .authorizes outputs.deploy 'Human-approved action' { #proposed metadata { uid 'authorize-deploy' } }
   core.lifecycle.transitions .records core.activity 'Lifecycle event' { metadata { uid 'lifecycle-activity' } }
   intake.cli .reads core.activity 'Inspect history' { metadata { uid 'cli-activity' } }

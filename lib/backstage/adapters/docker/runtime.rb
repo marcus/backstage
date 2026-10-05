@@ -67,7 +67,7 @@ module Backstage::Adapters::Docker
     # and closes it. This runtime closes it too, with the reason it actually ended for, and `close`
     # is idempotent so the opener still gets the same summary back.
     def run(bundle:, secrets: {}, cancellation: nil, capture: nil)
-      @validator.validate!("job-bundle-v1.json", bundle)
+      @validator.validate!("job-bundle-v2.json", bundle)
       validate_secrets!(bundle, secrets)
       return cancelled_before_launch(capture) if cancellation&.call
 

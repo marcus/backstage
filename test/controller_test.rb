@@ -49,8 +49,8 @@ class ControllerTest < Minitest::Test
 
     def compile(work_item:)
       {
-        "schema_version" => 1, "id" => Backstage::Domain::Records.id("bundle"),
-        "work_item" => work_item.slice("id", "title", "description", "source"),
+        "schema_version" => 2, "id" => Backstage::Domain::Records.id("bundle"),
+        "work_item" => work_item.slice("id", "title", "input", "source"),
         "repository" => { "url" => "https://github.com/example/widgets", "revision" => "main", "default_branch" => "main", "branch" => "backstage/#{work_item.fetch("id")}", "designated_repository" => "example/widgets" },
         "harness" => { "adapter" => "pi", "provider" => "openrouter", "model" => "test", "prompt" => "do the work" },
         "execution" => { "image" => "test", "command" => ["true"], "timeout_seconds" => 1, "credential_refs" => [], "mounts" => [] },
@@ -93,8 +93,8 @@ class ControllerTest < Minitest::Test
 
       assert_equal "completed", result.fetch("state")
       assert_equal %w[start submit_for_review approve], states(result)
-      assert_equal true, result.fetch("handoff_allowed")
-      assert_match(/Independent review approved by reviewer-approved/, result.dig("handoff", "decisions").first)
+      assert_equal true, result.fetch("delivery_allowed")
+      assert_equal "reviewer-approved", result.dig("result", "review", "reviewer_session_id")
 
       history = build_workflows(engine).history(work.fetch("id"))
       assert_equal %w[system agent reviewer], history.map { |row| row.dig("actor", "role") }
@@ -103,6 +103,24 @@ class ControllerTest < Minitest::Test
       verdict_artifact = engine.store.fetch("artifacts", approval.fetch("evidence").first)
       assert_equal candidate.fetch("sha256"), verdict_artifact.dig("provenance", "candidate_sha256")
       assert_equal %w[implementation review], engine.store.list("runs").map { |run| run.fetch("phase") }
+    end
+  end
+
+  def test_completion_attributes_the_exact_approved_verdict_in_mixed_evidence
+    in_tmpdir do |directory|
+      runners = [implementation(directory), review("approved", reviewer: "actual-approver", summary: "Exact candidate approved")]
+      engine, controller, work = build(directory, runner_factory: ->(*) { ScriptedRunner.new([runners.shift]) })
+      controller.process(work_item_id: work.fetch("id"))
+      completed = engine.show_work(work.fetch("id"))
+      approval = completed.fetch("artifacts").find { |row| row["kind"] == "review_verdict" }
+      stale = approval.merge("id" => "stale-verdict", "provenance" => approval.fetch("provenance").merge(
+        "verdict" => "blocked", "reviewer_session_id" => "stale-reviewer", "candidate_sha256" => "f" * 64))
+      completed["artifacts"].unshift(stale)
+      completed.fetch("transitions").last.fetch("evidence").unshift(stale.fetch("id"))
+      result = controller.completion_result(completed)
+      assert_equal "actual-approver", result.dig("review", "reviewer_session_id")
+      assert_equal "Exact candidate approved", result.dig("review", "summary")
+      assert_match(/actual-approver/, result.dig("review", "authority"))
     end
   end
 
@@ -141,7 +159,7 @@ class ControllerTest < Minitest::Test
 
       assert_equal "changes_requested", result.fetch("state")
       assert_equal 2, engine.store.fetch("work_items", work.fetch("id")).fetch("revisions_used")
-      assert_equal false, result.fetch("handoff_allowed")
+      assert_equal false, result.fetch("delivery_allowed")
       assert_equal "changes_requested", result.fetch("verdict")
       assert_equal 3, engine.store.list("runs").count { |run| run.fetch("phase") == "review" }
 
@@ -158,7 +176,7 @@ class ControllerTest < Minitest::Test
       result = controller.process(work_item_id: work.fetch("id"))
 
       assert_equal "needs_decision", result.fetch("state")
-      assert_equal false, result.fetch("handoff_allowed")
+      assert_equal false, result.fetch("delivery_allowed")
       decision = engine.store.list("decisions").last
       assert_equal "open", decision.fetch("status")
       assert_equal %w[resume_implementation cancel], decision.fetch("choices")
@@ -174,7 +192,7 @@ class ControllerTest < Minitest::Test
       )
       completed = engine.show_work(work.fetch("id"))
       assert_equal "running", completed.fetch("state")
-      assert_nil controller.handoff_payload(completed)
+      assert_nil controller.completion_result(completed)
     end
   end
 
@@ -223,7 +241,7 @@ class ControllerTest < Minitest::Test
       assert_equal %w[start execution_failed], states(result)
       assert_equal "failed", engine.store.list("runs").last.fetch("status")
       assert_equal "system", build_workflows(engine).history(work.fetch("id")).last.dig("actor", "role")
-      assert_equal false, result.fetch("handoff_allowed")
+      assert_equal false, result.fetch("delivery_allowed")
     end
   end
 

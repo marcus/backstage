@@ -1,0 +1,31 @@
+name: minimal
+version: 1
+description: Three states, no review, no evidence, no decisions.
+initial_state: new
+
+states:
+  new:
+    description: Not started.
+  in_progress:
+    description: Being worked on.
+  done:
+    description: Finished.
+    terminal: true
+
+transitions:
+  start:
+    from: [new]
+    to: in_progress
+    actors: [system, human]
+    dispatch:
+      phase: implementation
+      on_success: finish
+      on_failure: reset
+  finish:
+    from: [in_progress]
+    to: done
+    actors: [system, agent, human]
+  reset:
+    from: [in_progress]
+    to: new
+    actors: [system, human]

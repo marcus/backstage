@@ -2,45 +2,51 @@
 
 Backstage runs explicitly accepted work through a durable local queue and a lifecycle written in YAML. You submit an assignment, accept it for execution, and let a worker carry it through implementation, review, and any recorded human decisions. Backstage keeps the work state, execution history, and artifacts so progress can be inspected and interrupted runs reconciled.
 
-The included live path uses pi in Docker to implement a repository change, publishes a GitHub draft pull request, then runs a fresh independent review. The default lifecycle ends with an independently approved draft ready for human disposition. [td](https://github.com/marcus/td) is an optional integration for importing issues and writing back a handoff; direct submission and execution do not require td.
+The included live path uses pi in Docker to implement a repository change, publishes a GitHub draft pull request, then runs a fresh independent review. The default lifecycle ends with an independently approved draft ready for human disposition. [td](https://github.com/marcus/td) is an optional source adapter. A file-backed fake source demonstrates a different native format; manual submission and execution require no tracker.
 
 This project is not the CNCF Backstage developer portal.
 
 ## How work moves
 
-Backstage owns execution of an assignment. A tracker can own the surrounding backlog, priorities, and issue review. Importing a tracker issue creates a Backstage work item; it does not automatically authorize execution.
+Backstage owns execution of an assignment. A tracker can own the surrounding backlog, priorities, and issue review. Importing a task creates a Backstage work item; it does not automatically authorize execution. Native content stays an opaque agent-readable document. Backstage records its digest and source provenance alongside the repository target and workflow; it does not translate every tracker into a shared task schema.
 
-1. **Submit.** Use `submit` directly, or import through the td adapter. Admission records the target, source identity, and chosen workflow. Idempotent resubmission cannot retarget an assignment.
+1. **Submit.** Use `submit` directly, or `source submit` / `source poll` through a configured adapter. Admission freezes the input, source provenance, target, and chosen workflow. Idempotent resubmission cannot retarget an assignment.
 2. **Accept.** `dispatch accept` records an execution intent: the queue entry, execution mode, and retry policy. The dispatcher only consumes accepted intents.
 3. **Run.** `dispatch pass` makes one bounded pass; `dispatch run` repeats passes in a foreground worker. The controller follows the workflow's declared transitions and dispatches its jobs.
 4. **Stop or continue.** The lifecycle determines whether to implement again, review, wait for a human decision, or finish. Recovery reconciles recorded runs and external actions before more work starts.
 
 ```mermaid
 flowchart TD
-  manual["Direct CLI submission"] --> work
-  td["td issues"] --> source["td adapter: poll / import"]
-  source --> work
-  subgraph core["Backstage application"]
-    work["Work item + chosen YAML lifecycle"] --> accept["Explicit dispatch acceptance"]
+  manual["Manual text / native input file"] --> admission
+  sources["td / file-backed fake source"] --> adapters["Source adapters: discover + snapshot"]
+  adapters --> admission
+  subgraph core["Backstage host application"]
+    admission["Admission: frozen native input + provenance"] --> work["Work item + repository target + YAML lifecycle"]
+    work --> accept["Explicit dispatch acceptance"]
     accept --> queue["Durable execution intents"]
     queue --> dispatcher["Dispatcher + recovery"]
     worker["Foreground worker: bounded passes"] --> dispatcher
     dispatcher --> controller["Controller: transitions + jobs"]
     work -->|"direct process"| controller
     controller --> runners["Phase runners"]
+    controller --> approved["Independent completion evidence"]
+    approved --> delivery["Explicit result delivery: authority + operation ledger"]
   end
   controller --> state["Store / artifact adapters: JSONL + local files"]
+  delivery --> state
   runners --> execution["pi harness + Docker runtime"]
-  execution --> github["GitHub adapter / credentialed executor: draft PR"]
+  execution --> publisher["Credentialed GitHub executor: draft PR"]
+  publisher -->|"draft exists before fresh review"| execution
   execution -->|"outcomes, candidates, review verdicts"| controller
-  controller -.->|"CLI process --writeback after approval"| writeback["td adapter: handoff + request review"]
+  delivery --> writes["Source adapters: configured host-side operations"]
+  writes --> sources
 ```
 
 The diagram shows responsibilities. On the live default path, implementation produces a patch, a separate credentialed executor publishes the draft, and a fresh reviewer container inspects the candidate. Review findings can send the same assignment through bounded revisions. The [Fractal model](docs/diagrams/fractal/README.md) provides more detailed architecture and sequence views.
 
 Queue status and work lifecycle state are separate. An intent can be `queued`, `running`, `waiting`, `delayed`, `uncertain`, or `blocked`, then close as `completed`, `cancelled`, or `exhausted`. A completed intent means the work reached a terminal workflow state, which can include cancellation. Human waits need `decide`; uncertain runs and durable blocks need operator attention. Automatic failure retries are bounded and disabled by default in the example pack.
 
-There is one local dispatcher owner per state store. The worker runs in the foreground; use an external supervisor to keep it running. Its polling consumes the execution queue, not tracker issues. `td poll` is a separate ingestion command. `process WORK_ID` offers the same controller journey directly for work without an active execution intent; it refuses work already owned by the dispatcher.
+There is one local dispatcher owner per state store. The worker runs in the foreground; use an external supervisor to keep it running. Its polling consumes the execution queue, not tracker issues. `source poll CONNECTION` is a separate ingestion command. `process WORK_ID` offers the same controller journey directly for work without an active execution intent; it refuses work already owned by the dispatcher.
 
 ## Try the queue without external services
 
@@ -48,6 +54,8 @@ Ruby 4.0 or newer, Bundler, and `jq` for the shell example. Docker, td, and toke
 
 ```sh
 bundle install
+demo_dir=$(mktemp -d)
+export BACKSTAGE_STATE="$demo_dir/state.jsonl" BACKSTAGE_ARTIFACTS="$demo_dir/artifacts"
 bin/backstage config check --pack packs/example --json
 work_id=$(bin/backstage --json submit --pack packs/example --target widgets --title "Example" --description "Prove it" | jq -r .id)
 bin/backstage dispatch accept "$work_id" --pack packs/example --json
@@ -56,9 +64,9 @@ bin/backstage dispatch show "$work_id" --pack packs/example --json
 bin/backstage show "$work_id" --json
 ```
 
-This runs the fake implementation and review through the real lifecycle, state, and artifact machinery, without model or GitHub calls. For an ongoing worker, replace the pass with `bin/backstage dispatch run --pack packs/example --json`. To try direct execution, submit a different assignment and use `bin/backstage process WORK_ID --pack packs/example --json` without accepting it into the queue.
+This uses fresh temporary state and runs the fake implementation and review through the real lifecycle and artifact machinery, without model or GitHub calls. For an ongoing worker, replace the pass with `bin/backstage dispatch run --pack packs/example --json`. To try direct execution, submit a different assignment and use `bin/backstage process WORK_ID --pack packs/example --json` without accepting it into the queue.
 
-`packs/example` targets the fictional `example/widgets` repository. Structured state defaults to `~/.backstage/state.jsonl` and artifacts to `~/.backstage/artifacts`. `--state`, `--artifacts`, `BACKSTAGE_STATE`, and `BACKSTAGE_ARTIFACTS` override those paths. Manual submissions deduplicate by a key derived from the title unless you provide `--idempotency-key`.
+`packs/example` targets the fictional `example/widgets` repository. Structured state defaults to `~/.backstage/state.jsonl` and artifacts to `~/.backstage/artifacts`. `--state`, `--artifacts`, `BACKSTAGE_STATE`, and `BACKSTAGE_ARTIFACTS` override those paths. Use `--idempotency-key` when repeating a manual assignment must return the same work item. Source admission deduplicates within the configured source identity and target. Accepted input stays frozen even when its source changes.
 
 Global `--json` and `--jsonl` work before or after the command. The [operator guide](docs/guides/active/operator-guide.md) covers queue controls, `transition`, `decide`, `recover`, `cancel`, and activity inspection. Nothing in the CLI waits for a keypress.
 
@@ -68,7 +76,7 @@ The Ruby application owns lifecycle transitions, policy, routing, idempotency, e
 
 | Boundary | Included implementation |
 |---|---|
-| Work ingestion and tracker writeback | td client, trigger polling, and work-source adapter; direct CLI submission also enters the core |
+| Native work sources and result delivery | td and file-backed fake adapters behind the WorkSource port; manual admission enters the core directly |
 | Repository operations and review changes | GitHub repository and draft pull request adapters, with the container repository executor |
 | Agent harness and output interpretation | pi invocation and stream interpreter; the live runner currently uses OpenRouter credentials |
 | Worker execution and liveness | Docker runtime and presence adapter; fake runners/runtime for local proof and tests |
@@ -76,11 +84,11 @@ The Ruby application owns lifecycle transitions, policy, routing, idempotency, e
 | Artifacts, context, and worker requests | Local files for artifacts, read-only repository context, and the agent request channel |
 | Dispatcher ownership, time, and credentials | Local file ownership lock, system clock, and environment credential broker |
 
-The explicit interfaces in [`ports/`](lib/backstage/ports/) cover storage, dispatcher ownership, clocks, runtime presence, agent requests, capture, and stream interpretation. Other seams, including the harness, runtime, and work source, use injected Ruby objects and their method contracts. [`bootstrap/system.rb`](lib/backstage/bootstrap/system.rb) wires the included implementations. Another tracker, harness, runtime, or store requires adapter code and composition/configuration changes; changing a YAML `kind` alone does not install an integration. No other tracker adapter ships today.
+The explicit interfaces in [`ports/`](lib/backstage/ports/) cover work sources, storage, dispatcher ownership, clocks, runtime presence, agent requests, capture, and stream interpretation. Other seams, including the harness and runtime, use injected Ruby objects and their method contracts. [`bootstrap/system.rb`](lib/backstage/bootstrap/system.rb) wires the included implementations. Another tracker, harness, runtime, or store requires adapter code and composition/configuration changes; changing a YAML `kind` alone does not install an integration. Jira and Ship It adapters do not ship today. The [work source guide](docs/guides/active/work-sources.md) describes the extension contract.
 
-A deployment pack describes adapter settings, worker image, credential references, and the lifecycles on offer. A target binds one repository, its source routing, instructions, and optional read-only context checkouts. A job bundle is compiled and stored for each run, recording what the agent was given.
+A deployment pack describes adapter settings, worker image, credential references, and the lifecycles on offer. A target binds one repository, its authority, instructions, and optional read-only context checkouts. Named source connections live separately and declare which targets and write operations they permit. A job bundle is compiled and stored for each run, recording what the agent was given.
 
-The current pack format still requires `trigger.td_workspace` and `trigger.source_instance` on every target, including targets used by manual submissions. Those fields bind routing identity; direct execution does not invoke td or require a td installation. This is a current configuration limit of the included integration.
+`packs/example` is a source-free manual pack. `packs/sources-example` adds td and fake connections without changing the repository targets or workflows. Source documents cannot choose a repository, endpoint, credential, operation permission, or actor authority.
 
 Keep your deployment pack outside this repository, replace the fictional repository and context settings, and pass its directory with `--pack`. `bin/backstage config check --pack PATH --json` compiles the pack and its workflows. The [configuration model](docs/guides/active/config-model.md) documents the file shape. Routing and the workflow digest are fixed at admission; later processing cannot silently change them.
 
@@ -119,18 +127,37 @@ credentials:
 
 Use a token restricted to the designated repository. Backstage cannot read a token and tell which repositories it covers, so that scope is an operator precondition.
 
-## Optional td integration
+## Native sources and result delivery
 
-With td installed and a pack target pointing at its workspace, import open issues labeled `agent-ready`, or select an issue explicitly:
+Configure a named connection in your pack, then import explicitly or discover eligible work:
 
 ```sh
-bin/backstage td poll --pack /path/to/your-pack --target TARGET --json
-bin/backstage submit --td-issue ISSUE_ID --pack /path/to/your-pack --target TARGET --json
+bin/backstage source submit tasks ISSUE_ID --pack /path/to/your-pack --target TARGET --json
+bin/backstage source poll tasks --pack /path/to/your-pack --target TARGET --json
 ```
 
-These commands admit work; accept each returned work item separately to queue it. Backstage keeps its own execution records and lifecycle rather than relying on td status to track a worker.
+The td adapter selects open issues labeled `agent-ready`. The fake source reads a native JSON fixture with different field names and IDs. Try `source submit native Widget/Case-17 --pack packs/sources-example --json`, or discover it with `source poll native`. Both commands admit work. Accept returned work IDs separately to queue them. Backstage's execution lifecycle remains separate from source status.
 
-Tracker writeback is explicit: `process WORK_ID --pack PATH --publish-draft --writeback` can post a td handoff and request td review once completion has recorded authority from an independent verdict. Use it for td-backed work. `dispatch run` does not automatically write back to td. The td review request is a tracker action separate from Backstage's independent agent review; neither merges the draft.
+You can also submit a native UTF-8 document directly:
+
+```sh
+bin/backstage submit --pack packs/example --target widgets --title "Native assignment" \
+  --input-file /path/to/task.json --media-type application/json --json
+```
+
+Source edits never change an existing assignment. `source refresh WORK_ID --pack PATH` creates a new work item when the source snapshot changed and refuses an active predecessor. An unchanged refresh returns the existing item. Inspect the new work, then explicitly `dispatch accept` it. Refresh does not copy execution authorization.
+
+After independent approval, deliver only the operations you select:
+
+```sh
+bin/backstage deliver WORK_ID --operation record_result --operation request_review --pack PATH --json
+# direct processing convenience, for work outside the queue:
+bin/backstage process WORK_ID --deliver record_result --deliver request_review --pack PATH --json
+```
+
+The td adapter implements `record_result` and `request_review` through native `td handoff` and `td review`. These commands retain td’s hierarchy behavior: handoffs and reviews can cascade to descendants, and reviews can advance a parent when its children are ready. Permitting these operations authorizes those native effects. Receipts observe the referenced issue; they do not enumerate every hierarchy change. The fake implements `record_result` and `mark_ready`. The host checks both adapter capabilities and configured permissions, records each operation, and owns the adapter's credentials. Successful operations are reused on retry. An attempted write with an unknown outcome needs reconciliation or an explicit operator resolution before another attempt. The queue worker never delivers source results automatically. See the [operator guide](docs/guides/active/operator-guide.md#delivering-results) for inspection and recovery.
+
+The source and input contracts replace the earlier td-shaped pack and work records. Existing state is preserved; use a separate `--state` and `--artifacts` directory and explicitly reimport assignments when moving from the older format. Backstage does not migrate or delete old records automatically.
 
 ## Execution boundaries
 
@@ -140,7 +167,7 @@ The agent checkout has no repository credentials. It produces a size-bounded pat
 
 Actor authority comes from where a request entered. An operator may act as a person or as the system. Worker requests go through a run-scoped channel as `agent` or `reviewer`; a worker cannot approve its own change. Implementation and review use distinct runner objects and fresh containers, and review authority is clone-only. Independent approval is bound to the candidate digest; new candidate content invalidates an earlier approval. The [operator guide](docs/guides/active/operator-guide.md#actors-and-the-local-trust-boundary) describes the trusted local CLI boundary and decision rules.
 
-Transitions commit state, history, decisions, and requested jobs together, guarded by the work item's revision. Late results from cancelled or replaced runs are fenced. GitHub and td writes use preflight reconciliation and a persisted external-action ledger: retries reconcile the recorded branch, draft, and handoff instead of blindly repeating them.
+Transitions commit state, history, decisions, and requested jobs together, guarded by the work item's revision. Late results from cancelled or replaced runs are fenced. GitHub publication and source delivery use preflight reconciliation and persisted external-action records: retries reconcile the recorded branch, draft, and source operation instead of blindly repeating them.
 
 ## Development
 
@@ -148,20 +175,21 @@ Transitions commit state, history, decisions, and requested jobs together, guard
 bundle exec rake test
 BACKSTAGE_DOCKER_TEST=1 bundle exec rake test
 bin/backstage config check --pack packs/example --json
+bin/backstage config check --pack packs/sources-example --json
 ```
 
 The default suite does not use the network, td, GitHub, or a model provider. Docker tests are opt-in and need the worker image. Run `scripts/scan-secrets` before publishing anything that might carry a credential value.
 
-Schemas in `schemas/` are versioned (`*-v1.json`, plus v2 agent requests and the current run outcome). When a contract changes, add a new file. Do not edit a schema that already has records written against it.
+Schemas in `schemas/` are versioned (`*-v1.json`, plus v2 job bundles, agent requests, and run outcomes). When a contract changes, add a new file. Do not edit a schema that already has records written against it.
 
 `lib/backstage` is split by boundary:
 
 | Directory | Holds |
 |---|---|
 | `domain/` | Records, compiled lifecycles, repository authority |
-| `application/` | Execution, transitions, recovery |
+| `application/` | Admission, execution, transitions, recovery, and result delivery |
 | `ports/` | Narrow interfaces |
-| `adapters/` | td, GitHub, pi, Docker, JSONL, local files, environment, and the fake journey |
+| `adapters/` | td, native fake source, GitHub, pi, Docker, JSONL, local files, environment, and fake execution |
 | `configuration/` | Deployment pack compilation |
 | `contracts/` | Schema validation |
 | `surfaces/` | The CLI |
@@ -171,7 +199,7 @@ No gem outside Ruby's standard and default libraries is required beyond the `bas
 
 ## Status
 
-0.1.0. JSONL and local files provide persistence; pi and Docker are the included live harness and runtime; td is the included tracker integration. The CLI and Ruby library are available today. Additional integrations and process hosts require implementation.
+0.1.0. JSONL and local files provide persistence; pi and Docker are the included live harness and runtime; td is the included tracker adapter, and a file-backed fake source proves the native-source boundary. The CLI and Ruby library are available today. Additional integrations and process hosts require implementation.
 
 ## License
 

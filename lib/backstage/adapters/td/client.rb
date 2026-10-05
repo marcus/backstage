@@ -7,7 +7,6 @@ module Backstage::Adapters::Td
     CommandRunner = Backstage::Support::CommandRunner
     ContractError = Backstage::ContractError
     READY_QUERY = "status = open AND labels = agent-ready"
-    APPROVAL_QUERY = "(status = in_review OR status = closed) AND has(reviewer)"
 
     attr_reader :workspace
 
@@ -20,23 +19,22 @@ module Backstage::Adapters::Td
       json(["td", "query", READY_QUERY, "--output", "json", "--limit", "0"])
     end
 
-    def approval_candidates
-      json(["td", "query", APPROVAL_QUERY, "--output", "json", "--limit", "0"])
-    end
-
     def show(issue_id)
-      json(["td", "show", normalize_issue_id(issue_id), "--json"])
+      json(["td", "show", issue_id, "--json"])
     end
 
     def handoff(issue_id, done:, remaining:, decisions:)
-      argv = ["td", "handoff", normalize_issue_id(issue_id), "--done", done, "--remaining", remaining]
+      # td expands --done values beginning with @ or equal to - as host files/stdin.
+      # --note appends literal text to the same native Done field. The source adapter supplies
+      # trusted prefixes for remaining/decisions, which prevents expansion in those flags.
+      argv = ["td", "handoff", issue_id, "--note", done, "--remaining", remaining]
       Array(decisions).each { |decision| argv.concat(["--decision", decision]) }
       argv << "--json"
       json(argv)
     end
 
     def review(issue_id, reason:)
-      json(["td", "review", normalize_issue_id(issue_id), "--reason", reason, "--json"])
+      json(["td", "review", issue_id, "--reason", reason, "--json"])
     end
 
     private
@@ -51,10 +49,6 @@ module Backstage::Adapters::Td
       payload
     rescue JSON::ParserError => error
       raise ContractError, "invalid td JSON: #{error.message}"
-    end
-
-    def normalize_issue_id(issue_id)
-      issue_id.to_s.downcase
     end
   end
 end

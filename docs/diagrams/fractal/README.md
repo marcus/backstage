@@ -26,8 +26,7 @@ fractal export --directory "$MODEL_DIR" --scene overview \
 ```
 
 Fractal's persistent project catalog lives at `~/.config/fractal/catalog.json`. Register this
-checkout's `docs/diagrams/fractal/` directory there rather than copying the model into Fractal's
-repository. The normal local studio is `http://127.0.0.1:5199`; once the catalog entry and service
+checkout's `docs/diagrams/fractal/` directory there so the studio reads the project-owned files. The normal local studio is `http://127.0.0.1:5199`; once the catalog entry and service
 are available, open `http://127.0.0.1:5199/?model=backstage&scene=overview`.
 
 For an isolated review that does not depend on the persistent service, use a free task-specific
@@ -69,11 +68,11 @@ Expand **Durable activity log** in another perspective to reveal the same four c
 
 The recorder builds facts, the event contract defines their shape, the shared Store port commits
 state and history atomically, and the query service reads them through list, show and follow.
-Relationship arrows show dependencies, not a temporal sequence. The recorder does not append
+Relationship arrows show dependencies. The recorder does not append
 history: its caller, such as the workflow service, supplies both state writes and built events to
 `Store#commit`. Obtaining a deployment identity can initialize that identity in the store;
 building an event does not commit its history. The JSONL implementation remains represented by **State & artifacts** outside this
-focused view. The Store node here describes its activity-facing contract, not a separate store.
+focused view. The Store node here describes the shared store’s activity-facing contract.
 Operational records remain authoritative for current state; activity explains what happened.
 
 The scoped scene deliberately omits producer and storage context to keep the four responsibilities
@@ -116,4 +115,18 @@ fractal project --directory docs/diagrams/fractal --scene dispatch-detail --json
 fractal project --directory docs/diagrams/fractal --scene capture-detail --json
 fractal export --directory docs/diagrams/fractal --scene capture-detail \
   --format png --output /tmp/backstage-capture-detail.png
+```
+
+## Native source boundaries
+
+**Native inputs, governed execution** (`scene=sources`) shows manual input, td, and the file-backed fake converging at admission. Polling snapshots work; it never accepts an execution intent. Targets retain repository authority while separate connections configure permitted routing and operations. Native input and provenance remain frozen for implementation and review.
+
+Result delivery is a host responsibility separate from the publisher and queue. Explicit commands require independently approved completion, then prepare and reconcile one configured source operation at a time. Unknown attempted writes stop for evidence or a trusted resolution. The td discovery node keeps its stable ID from the earlier trigger view, but no longer represents a separate Trigger class. Jira and Ship It implementations are absent.
+
+This source-boundary detail was checked on 2026-10-05 against `ports/work_source.rb`, `application/source_admission.rb`, `application/result_delivery.rb`, both native source adapters, the pack compiler, composition root, and CLI. The existing `draft-review` sequence still shows publication before independent review; source delivery follows that approved result only when explicitly requested.
+
+```sh
+fractal project --directory docs/diagrams/fractal --scene sources --json
+fractal export --directory docs/diagrams/fractal --scene sources \
+  --format svg --output /tmp/backstage-sources.svg
 ```

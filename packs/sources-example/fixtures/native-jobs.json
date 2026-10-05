@@ -1,0 +1,12 @@
+{
+  "jobs": [
+    {
+      "key": "Widget/Case-17",
+      "display": "Improve widget copy",
+      "body": "Update the widget copy.\n\nKeep the native document as written.",
+      "format": "text/markdown",
+      "revision": "v1",
+      "selected": true
+    }
+  ]
+}

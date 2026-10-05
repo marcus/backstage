@@ -118,20 +118,39 @@ module Backstage
         Backstage::Configuration::DeploymentPack.new(pack_path)
       end
 
-      def td_source(target:, target_name:, workflow:)
-        client = Backstage::Adapters::Td::Client.new(workspace: target.dig("trigger", "td_workspace"))
-        [
-          Backstage::Adapters::Td::Trigger.new(client: client, store: engine.store, source_instance: target.dig("trigger", "source_instance")),
-          Backstage::Adapters::Td::WorkSource.new(
-            client: client,
-            store: engine.store,
-            engine: engine,
-            source_instance: target.dig("trigger", "source_instance"),
-            target_name: target_name,
-            source_identity: target.dig("trigger", "td_workspace"),
-            workflow: workflow
+      def source_adapter(configuration, name)
+        source = configuration.sources.fetch(name) { raise Backstage::ContractError, "unknown source #{name}" }
+        case source.fetch("kind")
+        when "td"
+          Backstage::Adapters::Td::Source.new(
+            client: Backstage::Adapters::Td::Client.new(workspace: File.expand_path(source.fetch("workspace"), configuration.pack_path))
           )
-        ]
+        when "fake"
+          Backstage::Adapters::Fake::WorkSource.new(
+            path: File.expand_path(source.fetch("path"), configuration.pack_path),
+            ledger_path: "#{@state_path || engine.store.path}.source-#{name}.json"
+          )
+        else
+          raise Backstage::ContractError, "unsupported work source #{source.fetch("kind")}"
+        end
+      end
+
+      def source_admission(configuration:)
+        Backstage::Application::SourceAdmission.new(
+          engine: engine, configuration: configuration,
+          adapter_factory: ->(name) { source_adapter(configuration, name) }
+        )
+      end
+
+      def result_delivery(configuration:)
+        Backstage::Application::ResultDelivery.new(
+          engine: engine, configuration: configuration,
+          adapter_factory: ->(name) { source_adapter(configuration, name) },
+          completion_result: ->(work) { controller(configuration: configuration).completion_result(engine.show_work(work.fetch("id"))) },
+          ownership: Backstage::Adapters::LocalFiles::DispatchOwnership.new(
+            "#{@state_path || engine.store.path}.delivery.lock"
+          )
+        )
       end
 
       def publish_runtime

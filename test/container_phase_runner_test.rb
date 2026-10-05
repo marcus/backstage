@@ -77,7 +77,7 @@ class ContainerPhaseRunnerTest < Minitest::Test
       ])
       broker = example_broker( { "GITHUB_TOKEN" => "github-secret", "OPENROUTER_API_KEY" => "model-secret" })
       config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
-      work = { "id" => "work", "title" => "Work", "description" => "Do it", "source" => "td", "source_ref" => "td-work", "target" => "widgets", "source_instance" => "widgets-example", "source_identity" => "/projects/widgets" }
+      work = { "id" => "work", "title" => "Work", "input" => { "content" => "Do it", "media_type" => "text/plain", "sha256" => Digest::SHA256.hexdigest("Do it") }, "target" => "widgets" }
       bundle = config.compile(work_item: work)
       bundle["repository"]["branch"] = "backstage/work"
 
@@ -113,7 +113,7 @@ class ContainerPhaseRunnerTest < Minitest::Test
         broker = example_broker( { "GITHUB_TOKEN" => "github-secret", "OPENROUTER_API_KEY" => "model-secret" })
         config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
         engine = build_engine(directory)
-        work = submit_work(engine, key: "cancel-#{cancelled_phase}", title: "Cancel", source: "td", source_ref: "td-cancel", **config.binding_for("widgets"))
+        work = submit_work(engine, key: "cancel-#{cancelled_phase}", title: "Cancel", **config.binding_for("widgets"))
         bundle = config.compile(work_item: work)
         authority = Backstage::RepositoryAuthority.new(designated_repository: bundle.dig("repository", "designated_repository"), default_branch: bundle.dig("repository", "default_branch"))
         review_change = Backstage::GitHubReviewChange.new(store: engine.store, authority: authority)
@@ -286,8 +286,8 @@ class ContainerPhaseRunnerTest < Minitest::Test
   def build_runner(directory, runtime, review: false)
     broker = example_broker( { "GITHUB_TOKEN" => "github-secret", "OPENROUTER_API_KEY" => "model-secret" })
     config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
-    work = { "id" => "work", "title" => "Work", "description" => "Do it", "source" => "td", "source_ref" => "td-work",
-             "target" => "widgets", "source_instance" => "widgets-example", "source_identity" => "/projects/widgets" }
+    work = { "id" => "work", "title" => "Work", "input" => { "content" => "Do it", "media_type" => "text/plain", "sha256" => Digest::SHA256.hexdigest("Do it") },
+             "target" => "widgets" }
     bundle = config.compile(work_item: work)
     bundle["repository"]["branch"] = "backstage/work"
     store = Backstage::JsonlStore.new(File.join(directory, "state.jsonl"))

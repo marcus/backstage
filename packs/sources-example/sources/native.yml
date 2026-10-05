@@ -1,0 +1,6 @@
+kind: fake
+identity: native-demo
+path: fixtures/native-jobs.json
+targets: [widgets]
+default_target: widgets
+operations: [record_result, mark_ready]

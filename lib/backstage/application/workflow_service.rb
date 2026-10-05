@@ -159,6 +159,8 @@ module Backstage::Application
       work = fetch_work(work_item_id)
       workflow = workflow_for(work)
       from = work.fetch("state")
+      raise ConflictError, "work item was refreshed as #{work.fetch("refreshed_to")}" if work["refreshed_to"]
+      raise ConflictError, "work item has active source delivery" if work["source_delivery_owner"]
       check_expectations!(work, expected_state, expected_revision)
       run_guards = authorize_run!(work, actor, run_id)
 
@@ -220,7 +222,7 @@ module Backstage::Application
       )] if answered
       writes << ["jobs", dispatch_job] if dispatch_job
       store.commit(writes, expect: [
-        { collection: "work_items", id: work.fetch("id"), revision: work.fetch("revision") },
+        { collection: "work_items", id: work.fetch("id"), revision: work.fetch("revision"), fields: { refreshed_to: nil, source_delivery_owner: nil } },
         { collection: "work_transitions", id: transition_id, revision: nil },
         *run_guards
       ], activity: transition_events(updated, transition_record, definition, raised, answered))

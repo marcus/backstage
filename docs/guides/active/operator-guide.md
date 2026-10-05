@@ -11,7 +11,7 @@ See the [activity and effects plan](../../plans/active/activity-and-effects/READ
 
 ## Configuration
 
-`packs/example/backstage.yml` selects adapters, the worker image, model defaults, policy, credential references, and the default work lifecycle. Each `packs/example/targets/*.yml` file claims one trigger source and defines one repository's authority, its optional read-only context repositories, and optionally its own workflow. Each `packs/example/workflows/*.yml` file defines one lifecycle; see [the configuration model](config-model.md#workflows).
+`packs/example/backstage.yml` selects adapters, the worker image, model defaults, policy, credential references, and the default work lifecycle. Each `targets/*.yml` file defines a repository's authority, optional read-only context repositories, and optional workflow override. Named `sources/*.yml` connections separately select source adapters, permitted targets, and delivery operations. `packs/example` has no sources; `packs/sources-example` includes td and a native fake source. Each `packs/example/workflows/*.yml` file defines one lifecycle; see [the configuration model](config-model.md#workflows).
 
 Run this after every configuration edit:
 
@@ -27,6 +27,75 @@ The example pack maps these references:
 | `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
 
 Use a fine-grained GitHub token restricted to the designated repository with Contents read/write and Pull requests read/write. Do not use a broad administrative token for proof. Backstage cannot verify repository selection from a token value, so that scope is an operator precondition.
+
+## Submitting native work
+
+Manual submission uses a display title and one UTF-8 input document:
+
+```sh
+bin/backstage submit --pack packs/example --target widgets --title "Example" --description "Prove it" --json
+bin/backstage submit --pack packs/example --target widgets --title "Native task" \
+  --input-file /path/to/task.json --media-type application/json --idempotency-key task-42 --json
+```
+
+`--description` supplies plain text. `--input-file` preserves the file's UTF-8 native content (up to 1 MiB); `--media-type` describes it. The core computes a SHA-256 digest. A repeated idempotency key cannot change an assignment's input, target, or workflow.
+
+Inspect configured connections, then use native references or adapter discovery:
+
+```sh
+bin/backstage source list --pack /path/to/your-pack --json
+bin/backstage source submit tasks ISSUE_ID --pack /path/to/your-pack --target TARGET --json
+bin/backstage source submit native Widget/Case-17 --pack packs/sources-example --json
+bin/backstage source poll native --pack packs/sources-example --json
+```
+
+Source IDs remain adapter-owned. td discovers open `agent-ready` issues; fake discovers references in its native JSON file. The source configuration or explicit `--target` routes work, subject to that connection's allowed targets. Neither an input document nor a tracker comment can grant execution authority, select an endpoint, or supply credential or capability permissions. Source import does not accept work into the execution queue.
+
+Discovery remains retryable if admission fails: a later poll retries the discovered reference rather than treating observation as successful admission. Repeating admission returns the existing frozen assignment; source edits do not silently update it.
+
+To use edited requirements, finish or stop the predecessor's active execution and acceptance, then refresh:
+
+```sh
+bin/backstage source refresh WORK_ID --pack /path/to/your-pack --json
+bin/backstage show NEW_WORK_ID --json
+bin/backstage dispatch accept NEW_WORK_ID --pack /path/to/your-pack --json
+```
+
+When native content, media type, title, or version changed, refresh creates a new assignment with its new snapshot and provenance. An unchanged refresh returns the existing work item. It refuses an active predecessor and never transfers its execution authorization. Review and retries for the old assignment remain bound to its original input. Use the same new work ID for inspection and acceptance.
+
+## Delivering results
+
+The td operations call native `td handoff` and `td review`. They retain td’s descendant cascades and parent review behavior. Permitting these operations authorizes that hierarchy scope; the recorded receipt observes the referenced issue, not every related change.
+
+Source result delivery is explicit and host-side. The default workflow first records independent approval bound to the candidate and completion. Delivery then checks that the source adapter implements the selected operation and the configured connection permits it:
+
+```sh
+bin/backstage deliver WORK_ID --operation record_result --operation request_review --pack PATH --json
+bin/backstage deliver show ACTION_ID --json
+# convenience for direct processing outside the queue:
+bin/backstage process WORK_ID --deliver record_result --deliver request_review --pack PATH --json
+```
+
+Operations are repeatable flags, executed separately. td implements a handoff as `record_result` and its review request as `request_review`. The file-backed fake implements `record_result` and `mark_ready`; it does not imitate td's status fields. Manual work has no source delivery destination. Unsupported or unpermitted operations are refused.
+
+The host prepares and persists an immutable operation payload, uses local ownership to prevent concurrent delivery, and reconciles before attempting a write. Credentials and endpoints stay inside trusted host adapter configuration. The agent can describe its result; it cannot turn native prose into an authorized write.
+
+Retry the same `deliver` command after a known failure. Applied operations return their recorded result, and only unfinished operations proceed. If posting a result succeeded but requesting review failed, retrying does not repost the result or rerun implementation. A process that dies during a write may leave an unknown outcome; Backstage does not blindly repeat that attempted write.
+
+When adapter reconciliation cannot establish the result, inspect the source and operation record, then record a trusted resolution:
+
+```sh
+bin/backstage deliver resolve ACTION_ID --applied --reason "Verified the source receipt" --json
+bin/backstage deliver resolve ACTION_ID --not-applied --reason "Verified the source was unchanged" --json
+```
+
+Choose one resolution after verifying the external state. `--not-applied` permits a later explicit delivery attempt; `--applied` records the verified effect. Resolution belongs to the trusted local operator entry and cannot be supplied through task content or the worker channel. The adapter contract cannot guarantee duplicate-free delivery for a source with no reliable reconciliation.
+
+`dispatch run` never automatically delivers source results. Tracker review requests are separate from Backstage's independent review and do not merge a draft. Live execution still publishes the draft before running the fresh reviewer.
+
+## Moving from earlier state
+
+The native input and source configuration contracts replace the earlier td-shaped format. Existing state and artifacts are preserved; there is no automatic migration or deletion. Use explicit new `--state` and `--artifacts` paths, validate a new pack, and reimport assignments you intend to execute. Acceptance is a separate step after inspection.
 
 ## Work lifecycles
 
@@ -89,7 +158,7 @@ clears a wait on a person, whatever happened to the worker.
 
 The default independent-review workflow can resume or cancel after a blocked review; it cannot
 complete by bypassing the review. The human-gated example demonstrates local workflow completion,
-but cannot authorize GitHub/td handoff: external writeback still requires an approved independent
+but cannot authorize source result delivery: delivery still requires an approved independent
 verdict bound to the completion transition and its candidate.
 
 ## Actors and the local trust boundary
@@ -334,23 +403,28 @@ The agent checkout is finalized without repository credentials into a size-bound
 
 A real run mutates the target repository and calls a model. Use your own pack for this, not the fictional paths in `packs/example`. Before running it:
 
-1. Point a target at one repository and one td workspace, and mark a small, reversible issue `agent-ready`.
+1. Configure a repository target. For sourced work, configure a separate td connection permitting that target, and mark a small, reversible issue `agent-ready`. Manual work needs no td connection.
 2. Confirm `GITHUB_TOKEN` is limited to that repository (contents and pull requests). Confirm the target's remote and default branch. Backstage cannot check which repositories a token covers.
 3. Export `OPENROUTER_API_KEY` without printing it. Treat the provider account as the spend ceiling. pi's own cost field is not authoritative for the model named in the pack.
-4. Poll and note the returned work ID:
+4. Submit or discover work and note the returned work ID:
 
    ```sh
-   bin/backstage td poll --pack /path/to/your-pack --target your-target --json
+   bin/backstage source poll tasks --pack /path/to/your-pack --target your-target --json
    ```
 
-5. Run the only publishing command:
+5. Process work outside the queue with explicit draft authority:
 
    ```sh
-   bin/backstage process WORK_ID --pack /path/to/your-pack --publish-draft --writeback --json
+   bin/backstage process WORK_ID --pack /path/to/your-pack --publish-draft --json
    ```
 
-6. Confirm the result reaches `completed` with a draft PR URL and an approved independent-review verdict bound to the published candidate. Post the returned handoff through the `td` adapter, request review, approve it in an independent session, then poll again and confirm one new `approval:rv-*` trigger.
-7. If a run is cancelled or fails after an external write, run `bin/backstage recover WORK_ID --pack /path/to/your-pack --json`, then repeat the process command and confirm it fetches the recorded remote branch, reconciles the same draft PR, and does not duplicate identical `td` handoff/review writes.
+6. Confirm the result reaches `completed` with a draft PR URL and an approved independent-review verdict bound to the published candidate. Source delivery mutates the tracker; run it only when that additional effect is intended:
+
+   ```sh
+   bin/backstage deliver WORK_ID --operation record_result --operation request_review --pack /path/to/your-pack --json
+   ```
+
+7. If interrupted after an external write, recover the run and inspect its action records before continuing. Reprocessing reconciles the recorded remote branch and draft PR. Repeating delivery reconciles each source operation; an unknown attempted write stops until verified reconciliation or explicit resolution.
 8. Scan state and artifacts using canaries derived from the in-memory credential values without printing those values:
 
    ```sh
@@ -379,7 +453,7 @@ To stop the assignment itself, take the `cancel` transition.
 
 The deployment pack owns the default `state.path` and `artifacts.path`; both expand `~`. Use `--state` and `--artifacts` only for deliberate one-command overrides, or their `BACKSTAGE_STATE` and `BACKSTAGE_ARTIFACTS` equivalents. `show --json` returns the work item with its workflow binding and current `state`, plus its jobs, runs, attempts, artifacts, external actions, transition history, decisions, and agent requests. The work item's `state` is its position in its workflow; `status` on a job, run, or attempt describes execution only, and a failed run does not by itself mean the work failed.
 
-The target, source instance, and source identity are bound when a manual submission or `td poll` ingests work. Processing never accepts a replacement source identity and an idempotent resubmission with a different binding is rejected. Packs contain credential references only; `config check` recursively rejects secret-like raw fields and unsafe context names or mount paths.
+The native input, target, workflow, and optional source provenance are bound when admission creates work. Processing never accepts a replacement source identity and an idempotent resubmission with a different binding is rejected. Packs contain credential references only; `config check` recursively rejects secret-like raw fields and unsafe context names or mount paths.
 
 Recovery also inspects unfinished execution belonging to cancelled/terminal work, without reopening
 it. For a runner that guarantees identity is recorded before launch, a dead controller with no

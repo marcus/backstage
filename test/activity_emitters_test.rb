@@ -519,35 +519,35 @@ class ActivityEmittersTest < Minitest::Test
     in_tmpdir do |directory|
       store = Backstage::JsonlStore.new(File.join(directory, "state.jsonl"))
       client = PollingClient.new
-      trigger = Backstage::TdTrigger.new(client: client, store: store, source_instance: "widgets-example")
+      trigger = source_polling(store, client)
 
-      assert_empty trigger.poll
+      assert_empty trigger.poll(connection: "tasks")
       assert_equal 1, event_of(store, "source.checked").length, "the first answer is a change"
       lines = transactions(store).length
-      3.times { assert_empty trigger.poll }
+      3.times { assert_empty trigger.poll(connection: "tasks") }
       assert_equal lines, transactions(store).length, "an unchanged answer writes nothing"
 
       client.ready = [{ "id" => "td-abc123", "status" => "open", "labels" => ["agent-ready"], "title" => "Ready" }]
-      found = trigger.poll
+      found = trigger.poll(connection: "tasks")
 
       assert_equal 1, found.length
       checks = event_of(store, "source.checked")
       assert_equal 2, checks.length
       latest = checks.last
       assert_equal "external_observation", latest.dig("source", "provenance")
-      assert_equal 1, latest.dig("data", "new_triggers")
-      assert_equal "td:widgets-example", latest.fetch("correlation_id")
-      receipt = store.fetch("source_checks", "td:widgets-example")
+      assert_equal 1, latest.dig("data", "discovered")
+      assert_equal source_check_id, latest.fetch("correlation_id")
+      receipt = store.fetch("source_checks", source_check_id)
       assert_equal "ok", receipt.fetch("status")
-      assert_equal ["source.checked"], event_types(transaction_for(store, "source_checks", "td:widgets-example"))
+      assert_equal ["source.checked"], event_types(transaction_for(store, "source_checks", source_check_id))
 
       client.error = RuntimeError
-      assert_raises(RuntimeError) { trigger.poll }
+      assert_raises(RuntimeError) { trigger.poll(connection: "tasks") }
       failed = event_of(store, "source.checked").last
       assert_equal "failed", failed.dig("data", "status")
       assert_equal "RuntimeError", failed.dig("data", "error")
       lines = transactions(store).length
-      assert_raises(RuntimeError) { trigger.poll }
+      assert_raises(RuntimeError) { trigger.poll(connection: "tasks") }
       assert_equal lines, transactions(store).length, "a repeated failure is the same answer"
     end
   end
@@ -560,16 +560,16 @@ class ActivityEmittersTest < Minitest::Test
     in_tmpdir do |directory|
       store = Backstage::JsonlStore.new(File.join(directory, "state.jsonl"))
       client = PollingClient.new
-      trigger = Backstage::TdTrigger.new(client: client, store: store, source_instance: "widgets-example")
+      trigger = source_polling(store, client)
 
-      trigger.poll
+      trigger.poll(connection: "tasks")
       client.error = RuntimeError
-      assert_raises(RuntimeError) { trigger.poll }
+      assert_raises(RuntimeError) { trigger.poll(connection: "tasks") }
       client.error = nil
 
-      trigger.poll
+      trigger.poll(connection: "tasks")
 
-      receipt = store.fetch("source_checks", "td:widgets-example")
+      receipt = store.fetch("source_checks", source_check_id)
       assert_equal "ok", receipt.fetch("status"), "the receipt must follow the source back to healthy"
       assert_nil receipt["error"]
       assert_equal 3, receipt.fetch("check_sequence")
@@ -580,7 +580,7 @@ class ActivityEmittersTest < Minitest::Test
       assert_equal 3, checks.map { |check| check.fetch("event_id") }.uniq.length,
                    "each occurrence needs its own identity, or the recovery has nowhere to land"
       # The recovery receipt and the event explaining it are still one transaction.
-      assert_equal ["source.checked"], event_types(transaction_for(store, "source_checks", "td:widgets-example", state: "ok"))
+      assert_equal ["source.checked"], event_types(transaction_for(store, "source_checks", source_check_id, state: "ok"))
     end
   end
 
@@ -588,12 +588,12 @@ class ActivityEmittersTest < Minitest::Test
     in_tmpdir do |directory|
       store = Backstage::JsonlStore.new(File.join(directory, "state.jsonl"))
       client = PollingClient.new
-      trigger = Backstage::TdTrigger.new(client: client, store: store, source_instance: "widgets-example")
-      receipt = trigger.send(:record_check, status: "ok", triggers: [])
+      trigger = source_polling(store, client)
+      receipt = trigger.send(:record_check, connection: "tasks", status: "ok", refs: [], target: "widgets")
       lines = transactions(store).length
 
       # The same occurrence told twice — a retry after an interrupted acknowledgement — is one fact.
-      assert_nil trigger.send(:record_check, status: "ok", triggers: [])
+      assert_nil trigger.send(:record_check, connection: "tasks", status: "ok", refs: [], target: "widgets")
 
       assert_equal lines, transactions(store).length
       assert_equal 1, receipt.fetch("check_sequence")
@@ -624,16 +624,27 @@ class ActivityEmittersTest < Minitest::Test
     in_tmpdir do |directory|
       store = CollidingStore.new(Backstage::JsonlStore.new(File.join(directory, "state.jsonl")))
       client = PollingClient.new
-      trigger = Backstage::TdTrigger.new(client: client, store: store, source_instance: "widgets-example")
-      trigger.poll
+      trigger = source_polling(store, client)
+      trigger.poll(connection: "tasks")
       client.ready = [{ "id" => "td-abc123", "status" => "open", "labels" => ["agent-ready"], "title" => "Ready" }]
 
-      error = assert_raises(Backstage::ActivityConflictError) { trigger.poll }
+      error = assert_raises(Backstage::ActivityConflictError) { trigger.poll(connection: "tasks") }
 
       assert_match(/already exists with different content/, error.message)
-      assert_equal "ok", store.fetch("source_checks", "td:widgets-example").fetch("status")
+      assert_equal "ok", store.fetch("source_checks", source_check_id).fetch("status")
       assert_equal 1, event_of(store, "source.checked").length, "the refused event was never written"
     end
+  end
+
+  def source_polling(store, client)
+    engine = Backstage::Engine.new(store: store, artifact_store: Backstage::ArtifactStore.new(File.join(File.dirname(store.path), "artifacts")))
+    config = Backstage::Configuration.new(File.expand_path("../packs/sources-example", __dir__))
+    Backstage::Application::SourceAdmission.new(engine: engine, configuration: config,
+      adapter_factory: ->(_) { Backstage::Adapters::Td::Source.new(client: client) })
+  end
+
+  def source_check_id
+    "source:#{Digest::SHA256.hexdigest(JSON.generate(["tasks", "td", "widgets-tasks", "widgets"]))}"
   end
 
   class PollingClient
@@ -650,7 +661,6 @@ class ActivityEmittersTest < Minitest::Test
       @ready
     end
 
-    def approval_candidates = []
-    def show(id) = @ready.find { |issue| issue.fetch("id") == id }
+        def show(id) = @ready.find { |issue| issue.fetch("id") == id }
   end
 end

@@ -15,14 +15,14 @@ class ContractValidatorTest < Minitest::Test
       "credential_ref" => "github"
     }
 
-    assert_same bundle, Backstage::ContractValidator.new.validate!("job-bundle-v1.json", bundle)
+    assert_same bundle, Backstage::ContractValidator.new.validate!("job-bundle-v2.json", bundle)
   end
 
   def test_invalid_bundle_reports_boundary_path
     bundle = JSON.parse(File.read(File.expand_path("fixtures/job_bundle.json", __dir__)))
     bundle["execution"].delete("image")
 
-    error = assert_raises(Backstage::ContractError) { Backstage::ContractValidator.new.validate!("job-bundle-v1.json", bundle) }
+    error = assert_raises(Backstage::ContractError) { Backstage::ContractValidator.new.validate!("job-bundle-v2.json", bundle) }
     assert_includes error.message, "$.execution.image"
   end
 
@@ -30,7 +30,7 @@ class ContractValidatorTest < Minitest::Test
     validator = Backstage::ContractValidator.new
     bundle = JSON.parse(File.read(File.expand_path("fixtures/job_bundle.json", __dir__)))
     bundle["context_grants"] = [{ "unexpected" => "accepted" }]
-    assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v1.json", bundle) }
+    assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v2.json", bundle) }
 
     outcome = { "schema_version" => 1, "status" => "succeeded", "summary" => "reviewed", "process" => { "exit_code" => 0, "signal" => nil }, "review" => { "verdict" => "approved" } }
     error = assert_raises(Backstage::ContractError) { validator.validate!("outcome-v1.json", outcome) }
@@ -50,11 +50,11 @@ class ContractValidatorTest < Minitest::Test
     }
 
     escaped_name = JSON.parse(JSON.generate(valid)).merge("context_grants" => [grant.merge("name" => "../../escape")])
-    error = assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v1.json", escaped_name) }
+    error = assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v2.json", escaped_name) }
     assert_includes error.message, "$.context_grants[0].name"
 
     escaped_mount = JSON.parse(JSON.generate(valid)).merge("context_grants" => [grant.merge("mount" => "refs/../../escape")])
-    error = assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v1.json", escaped_mount) }
+    error = assert_raises(Backstage::ContractError) { validator.validate!("job-bundle-v2.json", escaped_mount) }
     assert_includes error.message, "$.context_grants[0].mount"
   end
 end

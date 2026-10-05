@@ -25,7 +25,7 @@ class DurableRestartTest < Minitest::Test
   def state_path(directory) = File.join(directory, "state.jsonl")
 
   def submit(directory)
-    json("submit", "--target", "widgets", "--title", "Durable restart", "--idempotency-key", "restart-1",
+    json("submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Durable restart", "--idempotency-key", "restart-1",
       "--workflow", "minimal", directory: directory).fetch("id")
   end
 
@@ -150,7 +150,7 @@ class DurableRestartTest < Minitest::Test
       assert_equal "completed", described.fetch("status")
       assert_equal "done", json("show", work_id, directory: directory).fetch("state")
 
-      json("submit", "--target", "widgets", "--title", "After the tear", "--idempotency-key", "restart-2", "--workflow", "minimal", directory: directory)
+      json("submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "After the tear", "--idempotency-key", "restart-2", "--workflow", "minimal", directory: directory)
 
       after = File.read(state_path(directory))
       assert after.start_with?(complete), "complete transactions were preserved"

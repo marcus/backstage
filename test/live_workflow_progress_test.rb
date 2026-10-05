@@ -11,7 +11,7 @@ class LiveWorkflowProgressTest < Minitest::Test
       definition["transitions"]["report"] = { "from" => ["investigating"], "to" => "investigating", "actors" => ["agent"] }
       definition["transitions"]["finish"]["from"] << "investigating"
       definition["transitions"]["reset"]["from"] << "investigating"
-      work = engine.submit(idempotency_key: "live", title: "live progress", description: "", workflow: Backstage::Domain::Workflow.compile(definition))
+      work = engine.submit(idempotency_key: "live", title: "live progress", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: Backstage::Domain::Workflow.compile(definition))
       service = build_workflows(engine)
       test = self
       runner_factory = lambda do |_phase, bundle, _work|

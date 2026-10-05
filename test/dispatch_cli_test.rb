@@ -27,7 +27,7 @@ class DispatchCLITest < Minitest::Test
   def with_cli
     in_tmpdir do |directory|
       base = ["--state", File.join(directory, "state.jsonl"), "--artifacts", File.join(directory, "artifacts"), "--pack", PACK]
-      work = json(base + ["--json", "submit", "--target", "widgets", "--title", "Durable work", "--idempotency-key", "durable-1", "--workflow", "minimal"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Durable work", "--idempotency-key", "durable-1", "--workflow", "minimal"])
       yield base, work.fetch("id"), directory
     end
   end
@@ -60,7 +60,7 @@ class DispatchCLITest < Minitest::Test
   def test_a_human_wait_is_answered_through_the_cli_and_continues_exactly_once
     in_tmpdir do |directory|
       base = ["--state", File.join(directory, "state.jsonl"), "--artifacts", File.join(directory, "artifacts"), "--pack", PACK]
-      work_id = json(base + ["--json", "submit", "--target", "widgets", "--title", "Gated work",
+      work_id = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Gated work",
         "--idempotency-key", "gated-1", "--workflow", "human-gated-change"]).fetch("id")
       json(base + ["--json", "dispatch", "accept", work_id])
 

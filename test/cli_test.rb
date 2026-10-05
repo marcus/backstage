@@ -25,7 +25,7 @@ class CLITest < Minitest::Test
 
   def test_a_journey_is_inspectable_in_json_and_jsonl
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--target", "widgets", "--title", "Steel thread", "--idempotency-key", "thread-1"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Steel thread", "--idempotency-key", "thread-1"])
       assert_equal "ready", work.fetch("state")
 
       code, out, err = run_cli(base + ["--jsonl", "list"])
@@ -62,7 +62,7 @@ class CLITest < Minitest::Test
 
   def test_submission_selects_a_workflow_and_transitions_are_listed_for_it
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
       assert_equal "minimal", work.dig("workflow", "name")
       assert_equal "new", work.fetch("state")
 
@@ -75,7 +75,7 @@ class CLITest < Minitest::Test
 
   def test_an_operator_transition_is_idempotent_and_appears_in_history
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
       id = work.fetch("id")
 
       first = json(base + ["--json", "transition", id, "--to", "start", "--actor", "system", "--request-id", "op-1", "--reason", "starting"])
@@ -94,7 +94,7 @@ class CLITest < Minitest::Test
 
   def test_a_stale_operator_expectation_fails_with_a_structured_error
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
       id = work.fetch("id")
       json(base + ["--json", "transition", id, "--to", "start", "--actor", "system", "--request-id", "op-1"])
 
@@ -109,7 +109,7 @@ class CLITest < Minitest::Test
 
   def test_an_operator_cannot_claim_to_be_an_agent
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--title", "Small", "--idempotency-key", "small-1", "--workflow", "minimal"])
       code, _out, err = run_cli(base + ["--json", "transition", work.fetch("id"), "--to", "start", "--actor", "agent", "--request-id", "op-1"])
 
       assert_equal 1, code
@@ -119,7 +119,7 @@ class CLITest < Minitest::Test
 
   def test_decide_answers_the_open_decision_by_name
     with_cli do |base, directory|
-      work = json(base + ["--json", "submit", "--target", "widgets", "--title", "Gated", "--idempotency-key", "gated-1", "--workflow", "human-gated-change"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Gated", "--idempotency-key", "gated-1", "--workflow", "human-gated-change"])
       id = work.fetch("id")
       json(base + ["--json", "transition", id, "--to", "start", "--actor", "system", "--request-id", "op-1"])
 
@@ -150,7 +150,7 @@ class CLITest < Minitest::Test
   # The full local journey through the shipped pack, as an operator would run it.
   def test_the_fake_journey_shows_agent_progress_and_a_completed_assignment
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--target", "widgets", "--title", "Journey", "--idempotency-key", "journey-1"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Journey", "--idempotency-key", "journey-1"])
       result = json(base + ["--json", "process", work.fetch("id")])
       assert_equal "completed", result.fetch("state")
 
@@ -167,7 +167,7 @@ class CLITest < Minitest::Test
 
   def test_recover_reports_structured_findings
     with_cli do |base|
-      work = json(base + ["--json", "submit", "--target", "widgets", "--title", "Recover", "--idempotency-key", "rec-1"])
+      work = json(base + ["--json", "submit", "--description", "Do the assigned work", "--target", "widgets", "--title", "Recover", "--idempotency-key", "rec-1"])
       json(base + ["--json", "transition", work.fetch("id"), "--to", "start", "--actor", "system", "--request-id", "op-1"])
 
       report = json(base + ["--json", "recover"])

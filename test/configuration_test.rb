@@ -5,14 +5,15 @@ require_relative "test_helper"
 class ConfigurationTest < Minitest::Test
   def test_reference_pack_checks_routes_and_compiles_secret_free_bundle
     config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
-    work = bound_work("id" => "td-ABC123", "title" => "Do the work", "description" => "Keep it narrow", "source" => "td", "source_ref" => { "issue_id" => "td-abc123", "source_instance" => "widgets-example" })
+    work = bound_work("id" => "work-ABC123", "title" => "Do the work", "input" => native_input("Keep it narrow"))
 
-    assert_equal "widgets", config.route("/projects/widgets")
+    assert_equal({ target: "widgets" }, config.binding_for("widgets"))
+    assert_equal({}, config.sources)
     bundle = config.compile(work_item: work)
 
     assert_equal "widgets", bundle["target"]
     assert_equal "https://github.com/example/widgets.git", bundle.dig("repository", "url")
-    assert_equal "backstage/td-abc123", bundle.dig("repository", "branch")
+    assert_equal "backstage/work-abc123", bundle.dig("repository", "branch")
     assert_equal "z-ai/glm-5.3-flash", bundle.dig("harness", "model")
     assert_equal ["github", "openrouter"], bundle.dig("execution", "credential_refs").sort
     assert_equal "GITHUB_TOKEN", config.credential_mapping.dig("github", "source_env")
@@ -36,14 +37,14 @@ class ConfigurationTest < Minitest::Test
       %w[alpha beta].each do |name|
         File.write(File.join(directory, "targets", "#{name}.yml"), <<~YAML)
           repo: { origin: "https://github.com/example/#{name}.git" }
-          trigger: { td_workspace: "#{directory}/#{name}", source_instance: "#{name}-source" }
           authority: { review_change: draft_pr }
         YAML
       end
 
       config = Backstage::Configuration.new(directory)
-      assert_equal "alpha", config.route(File.join(directory, "alpha"))
-      assert_equal "beta", config.route(File.join(directory, "beta"))
+      assert_equal "alpha", config.binding_for("alpha").fetch(:target)
+      assert_equal "beta", config.binding_for("beta").fetch(:target)
+      assert_empty config.sources
     end
   end
 
@@ -51,7 +52,7 @@ class ConfigurationTest < Minitest::Test
     in_tmpdir do |directory|
       config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
       engine = build_engine(directory)
-      work = submit_work(engine, key: "config-run", title: "Compile", description: "Audit", source: "td", source_ref: { "issue_id" => "td-x", "source_instance" => "widgets-example" }, **config.binding_for("widgets"))
+      work = submit_work(engine, key: "config-run", title: "Compile", description: "Audit", **config.binding_for("widgets"))
       bundle = config.compile(work_item: work)
 
       engine.execute(dispatch(engine, work), runner: Backstage::FakeRunner.new, bundle: bundle)
@@ -65,12 +66,13 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
-  def test_compile_rejects_cross_target_source_rebinding
-    config = Backstage::Configuration.new(File.expand_path("../packs/example", __dir__))
-    work = bound_work("id" => "td-x", "title" => "Wrong source", "description" => "", "source" => "td", "source_ref" => { "issue_id" => "td-x", "source_instance" => "different-target" })
+  def test_compile_rejects_unconfigured_source_and_corrupted_native_input
+    config = Backstage::Configuration.new(PACK)
+    work = bound_work("id" => "work-x", "title" => "Wrong source", "input" => native_input(""))
+    source = { "connection" => "unconfigured", "kind" => "fake", "identity" => "native", "ref" => "X" }
 
-    assert_raises(Backstage::ContractError) { config.compile(work_item: work) }
-    assert_raises(Backstage::ContractError) { config.compile(work_item: work.merge("source_identity" => "/tmp/other")) }
+    assert_raises(Backstage::ContractError) { config.compile(work_item: work.merge("source" => source)) }
+    assert_raises(Backstage::ContractError) { config.compile(work_item: work.merge("input" => native_input("other").merge("sha256" => "0" * 64))) }
   end
 
   def test_config_rejects_raw_secret_fields_and_path_unsafe_context
@@ -126,7 +128,11 @@ class ConfigurationTest < Minitest::Test
   private
 
   def bound_work(fields)
-    fields.merge("target" => "widgets", "source_instance" => "widgets-example", "source_identity" => "/projects/widgets")
+    fields.merge("target" => "widgets")
+  end
+
+  def native_input(content)
+    { "content" => content, "media_type" => "text/plain", "sha256" => Digest::SHA256.hexdigest(content) }
   end
 
   def write_pack(directory, context_name:, context_mount:, extra_pack: nil)
@@ -143,7 +149,6 @@ class ConfigurationTest < Minitest::Test
     YAML
     File.write(File.join(directory, "targets", "target.yml"), <<~YAML)
       repo: { origin: "https://github.com/example/repo.git" }
-      trigger: { td_workspace: "#{directory}/target", source_instance: test-source }
       authority: { review_change: draft_pr }
       context:
         repos:

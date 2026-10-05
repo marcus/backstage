@@ -22,11 +22,35 @@ class CoreTest < Minitest::Test
   def test_work_routing_binding_is_immutable
     in_tmpdir do |directory|
       engine = build_engine(directory)
-      first = submit_work(engine, key: "bound", target: "one", source_instance: "source-one", source_identity: "/one")
+      first = submit_work(engine, key: "bound", target: "one")
       assert_equal "one", first["target"]
       assert_raises(Backstage::ContractError) do
-        submit_work(engine, key: "bound", target: "two", source_instance: "source-two", source_identity: "/two")
+        submit_work(engine, key: "bound", target: "two")
       end
+    end
+  end
+
+  def test_native_input_is_opaque_bounded_and_core_digested
+    in_tmpdir do |directory|
+      engine = build_engine(directory)
+      content = '{"password":"task field, not a credential", "custom": [1,2]}'
+      work = submit_work(engine, key: "native", input: { content: content, media_type: "application/json" })
+      assert_equal content, work.dig("input", "content")
+      assert_equal Digest::SHA256.hexdigest(content), work.dig("input", "sha256")
+      refute work.key?("description")
+      assert_raises(Backstage::ContractError) { submit_work(engine, key: "digest", input: { content: "x", media_type: "text/plain", sha256: "forged" }) }
+      assert_raises(Backstage::ContractError) { submit_work(engine, key: "large", input: { content: "x" * (Backstage::Engine::INPUT_BYTE_LIMIT + 1), media_type: "text/plain" }) }
+      assert_raises(Backstage::ContractError) { submit_work(engine, key: "invalid", input: { content: "\xff".b, media_type: "text/plain" }) }
+    end
+  end
+
+  def test_atomic_admission_deduplicates_concurrent_engines
+    in_tmpdir do |directory|
+      engines = Array.new(4) { build_engine(directory) }
+      work = engines.map { |engine| Thread.new { submit_work(engine, key: "concurrent") } }.map(&:value)
+      assert_equal 1, work.map { |row| row.fetch("id") }.uniq.length
+      assert_equal 1, engines.first.store.list("work_items").length
+      assert_equal 1, engines.first.store.read_activity(filters: { type: "work.admitted" }).fetch("events").length
     end
   end
 
@@ -73,7 +97,7 @@ class CoreTest < Minitest::Test
         submit_work(engine, key: "x", title: "super-secret-value")
       end
       assert_raises(Backstage::ContractError) do
-        submit_work(engine, key: "x", title: "x", source_ref: { "api_token" => "oops" })
+        submit_work(engine, key: "x", title: "x", input: { content: "super-secret-value", media_type: "application/json" })
       end
     end
   end

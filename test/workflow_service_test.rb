@@ -355,7 +355,7 @@ class WorkflowServiceTest < Minitest::Test
         workflows.request_transition(work_item_id: work.fetch("id"), transition: "block", actor: operator("system"), request_id: "new-1")
       end
 
-      fresh = engine.submit(idempotency_key: "fresh", title: "Fresh", description: "", workflow: edited)
+      fresh = engine.submit(idempotency_key: "fresh", title: "Fresh", input: { content: "", media_type: "text/plain" }, target: "widgets", workflow: edited)
       assert_equal edited.digest, fresh.dig("workflow", "digest")
       assert_includes build_workflows(engine).workflow_for(fresh).transitions.keys, "block"
     end

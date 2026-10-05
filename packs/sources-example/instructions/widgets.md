@@ -1,0 +1,1 @@
+Implement the authorized issue narrowly. Preserve unrelated work, run the repository's documented checks, and return a structured implementation outcome. Never push the default branch, merge, or deploy.
